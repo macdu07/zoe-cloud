@@ -151,6 +151,8 @@
 		const active = ( jobs || [] ).find( ( job ) => [ 'queued', 'running' ].includes( job.status ) );
 
 		if ( ! active ) {
+			window.clearTimeout( state.jobStatusTimer );
+			state.jobStatus.innerHTML = '';
 			return;
 		}
 
@@ -262,6 +264,10 @@
 				method: 'DELETE',
 			} );
 			setFeedback( 'Backup deleted.' );
+			window.clearTimeout( state.jobStatusTimer );
+			if ( state.jobStatus ) {
+				state.jobStatus.innerHTML = '';
+			}
 			await refresh();
 		} catch ( error ) {
 			setFeedback( error.message, true );

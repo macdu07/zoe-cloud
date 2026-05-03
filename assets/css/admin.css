@@ -131,8 +131,12 @@
 }
 
 .zoecloud-admin .button {
+	align-items: center;
 	border-radius: 6px;
+	display: inline-flex;
 	font-weight: 700;
+	justify-content: center;
+	line-height: 1;
 	min-height: 36px;
 }
 

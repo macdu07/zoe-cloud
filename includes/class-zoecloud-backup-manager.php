@@ -344,7 +344,11 @@ class ZoeCloud_Backup_Manager {
 	public function list_jobs() {
 		$jobs = get_option( 'zoecloud_jobs', array() );
 
-		return is_array( $jobs ) ? $jobs : array();
+		if ( ! is_array( $jobs ) ) {
+			return array();
+		}
+
+		return $this->expire_stale_jobs( $jobs );
 	}
 
 	/**
@@ -1014,6 +1018,48 @@ class ZoeCloud_Backup_Manager {
 		);
 
 		update_option( 'zoecloud_jobs', array_slice( $jobs, 0, 25, true ), false );
+	}
+
+	/**
+	 * Mark abandoned jobs as failed so the UI does not show stale progress.
+	 *
+	 * @param array $jobs Jobs keyed by ID.
+	 * @return array
+	 */
+	private function expire_stale_jobs( array $jobs ) {
+		$changed   = false;
+		$threshold = time() - ( 15 * MINUTE_IN_SECONDS );
+
+		foreach ( $jobs as $job_id => &$job ) {
+			if ( empty( $job['status'] ) || ! in_array( $job['status'], array( 'queued', 'running' ), true ) ) {
+				continue;
+			}
+
+			$updated_at       = ! empty( $job['updated_at'] ) ? strtotime( $job['updated_at'] . ' UTC' ) : 0;
+			$working_dir      = $job['state']['working_dir'] ?? '';
+			$missing_workspace = ! empty( $working_dir ) && ! is_dir( $working_dir );
+
+			if ( ! $missing_workspace && $updated_at && $updated_at > $threshold ) {
+				continue;
+			}
+
+			if ( ! empty( $working_dir ) ) {
+				$this->cleanup_directory( $working_dir );
+			}
+
+			$job['status']     = 'failed';
+			$job['progress']   = 100;
+			$job['message']    = __( 'Backup job expired before completion.', 'zoe-cloud' );
+			$job['updated_at'] = current_time( 'mysql', true );
+			$changed           = true;
+		}
+		unset( $job );
+
+		if ( $changed ) {
+			$this->save_jobs( $jobs );
+		}
+
+		return $jobs;
 	}
 
 	/**

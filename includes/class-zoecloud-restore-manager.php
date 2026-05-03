@@ -126,6 +126,8 @@ class ZoeCloud_Restore_Manager {
 		$zip->extractTo( $temp_dir );
 		$zip->close();
 
+		$preserved_backups = $this->get_existing_backup_records();
+		$preserved_backups[] = $this->build_backup_record_from_archive( $zip_path, $validated['manifest'] );
 		$sql = file_get_contents( $temp_dir . '/database.sql' );
 
 		$imported = $this->import_sql( $sql );
@@ -134,6 +136,8 @@ class ZoeCloud_Restore_Manager {
 			$this->cleanup_directory( $temp_dir );
 			return $imported;
 		}
+
+		$this->merge_backup_records( $preserved_backups );
 
 		if ( $search && $replacement && $search !== $replacement ) {
 			$tables   = isset( $validated['manifest']['database_table_names'] ) && is_array( $validated['manifest']['database_table_names'] )
@@ -151,6 +155,121 @@ class ZoeCloud_Restore_Manager {
 		$this->cleanup_directory( $temp_dir );
 
 		return is_wp_error( $files_restored ) ? $files_restored : true;
+	}
+
+	/**
+	 * Capture current local backup records before importing the database.
+	 *
+	 * @return array
+	 */
+	private function get_existing_backup_records() {
+		$records = get_option( 'zoecloud_backups', array() );
+
+		return is_array( $records ) ? array_values( $records ) : array();
+	}
+
+	/**
+	 * Build a local backup record for the archive being restored.
+	 *
+	 * @param string $zip_path Archive path.
+	 * @param array  $manifest Backup manifest.
+	 * @return array
+	 */
+	private function build_backup_record_from_archive( $zip_path, array $manifest ) {
+		$filename = basename( $zip_path );
+
+		return array(
+			'id'           => md5( wp_normalize_path( $zip_path ) ),
+			'created_at'   => current_time( 'mysql', true ),
+			'filename'     => $filename,
+			'path'         => $zip_path,
+			'download_url' => wp_nonce_url(
+				add_query_arg(
+					array(
+						'action'   => 'zoecloud_download_backup',
+						'filename' => $filename,
+					),
+					admin_url( 'admin-post.php' )
+				),
+				'zoecloud_download_backup'
+			),
+			'size'         => file_exists( $zip_path ) ? filesize( $zip_path ) : 0,
+			'manifest'     => $manifest,
+			'drive'        => null,
+		);
+	}
+
+	/**
+	 * Merge preserved local backup records back after database import.
+	 *
+	 * @param array $preserved_records Backup records from before restore.
+	 * @return void
+	 */
+	private function merge_backup_records( array $preserved_records ) {
+		global $wpdb;
+
+		wp_cache_delete( 'zoecloud_backups', 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+
+		$current_records = get_option( 'zoecloud_backups', array() );
+		$current_records = is_array( $current_records ) ? $current_records : array();
+		$merged          = array();
+
+		foreach ( array_merge( $current_records, $preserved_records ) as $record ) {
+			if ( ! is_array( $record ) ) {
+				continue;
+			}
+
+			$key = ! empty( $record['id'] ) ? $record['id'] : ( $record['filename'] ?? '' );
+
+			if ( '' === $key ) {
+				continue;
+			}
+
+			$merged[ $key ] = $record;
+		}
+
+		$records = array_values( $merged );
+
+		usort(
+			$records,
+			static function ( $left, $right ) {
+				return strcmp( $right['created_at'] ?? '', $left['created_at'] ?? '' );
+			}
+		);
+
+		$serialized = maybe_serialize( $records );
+		$exists     = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
+				'zoecloud_backups'
+			)
+		);
+
+		if ( $exists ) {
+			$wpdb->update(
+				$wpdb->options,
+				array(
+					'option_value' => $serialized,
+					'autoload'     => 'off',
+				),
+				array(
+					'option_name' => 'zoecloud_backups',
+				)
+			);
+		} else {
+			$wpdb->insert(
+				$wpdb->options,
+				array(
+					'option_name'  => 'zoecloud_backups',
+					'option_value' => $serialized,
+					'autoload'     => 'off',
+				)
+			);
+		}
+
+		wp_cache_delete( 'zoecloud_backups', 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
 	}
 
 	/**
