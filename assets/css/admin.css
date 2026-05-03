@@ -301,6 +301,18 @@
 	background: rgba(220, 224, 231, 0.48);
 }
 
+.zoecloud-provider-fields {
+	border-top: 1px solid rgba(220, 224, 231, 0.9);
+	margin-top: 18px;
+	padding-top: 12px;
+}
+
+.zoecloud-provider-fields h3 {
+	color: var(--zoe-navy);
+	font-size: 16px;
+	margin: 0 0 4px;
+}
+
 .zoecloud-job-status {
 	margin-top: 16px;
 }

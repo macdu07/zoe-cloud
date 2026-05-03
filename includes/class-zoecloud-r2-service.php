@@ -1,6 +1,6 @@
 <?php
 /**
- * Cloudflare R2 uploads.
+ * Cloud storage uploads for S3-compatible providers.
  *
  * @package ZoeCloud
  */
@@ -34,24 +34,27 @@ class ZoeCloud_R2_Service {
 	}
 
 	/**
-	 * Return a summary about R2 configuration.
+	 * Return a summary about cloud storage configuration.
 	 *
 	 * @return array
 	 */
 	public function get_status() {
 		$settings = $this->get_settings();
+		$provider = $this->get_provider( $settings );
+		$config   = $this->get_provider_config( $settings, $provider );
 
 		return array(
-			'provider'     => 'r2',
-			'configured'   => ! empty( $settings['r2_account_id'] ) && ! empty( $settings['r2_access_key_id'] ) && ! empty( $settings['r2_secret_access_key'] ) && ! empty( $settings['r2_bucket'] ),
-			'bucket'       => $settings['r2_bucket'],
-			'prefix'       => $settings['r2_prefix'],
-			'endpoint'     => $this->get_endpoint( $settings ),
+			'provider'     => $provider,
+			'label'        => $config['label'],
+			'configured'   => $this->is_configured( $settings, $provider ),
+			'bucket'       => $config['bucket'],
+			'prefix'       => $config['prefix'],
+			'endpoint'     => $config['endpoint'],
 		);
 	}
 
 	/**
-	 * Upload a backup to Cloudflare R2.
+	 * Upload a backup to the configured cloud provider.
 	 *
 	 * @param string $file_path Backup file path.
 	 * @param array  $manifest  Backup manifest.
@@ -59,25 +62,27 @@ class ZoeCloud_R2_Service {
 	 */
 	public function upload_backup( $file_path, array $manifest ) {
 		$settings = $this->get_settings();
+		$provider = $this->get_provider( $settings );
+		$config   = $this->get_provider_config( $settings, $provider );
 
-		if ( empty( $settings['r2_account_id'] ) || empty( $settings['r2_access_key_id'] ) || empty( $settings['r2_secret_access_key'] ) || empty( $settings['r2_bucket'] ) ) {
-			return new WP_Error( 'zoecloud_r2_not_configured', __( 'Cloudflare R2 is not configured.', 'zoe-cloud' ) );
+		if ( ! $this->is_configured( $settings, $provider ) ) {
+			return new WP_Error( 'zoecloud_cloud_not_configured', sprintf( __( '%s is not configured.', 'zoe-cloud' ), $config['label'] ) );
 		}
 
 		if ( ! is_readable( $file_path ) ) {
-			return new WP_Error( 'zoecloud_r2_file_missing', __( 'Backup archive is not readable.', 'zoe-cloud' ) );
+			return new WP_Error( 'zoecloud_cloud_file_missing', __( 'Backup archive is not readable.', 'zoe-cloud' ) );
 		}
 
 		$filename = basename( $file_path );
-		$key      = $this->build_object_key( $settings, $manifest, $filename );
+		$key      = $this->build_object_key( $config['prefix'], $manifest, $filename );
 		$body     = file_get_contents( $file_path );
 
 		if ( false === $body ) {
-			return new WP_Error( 'zoecloud_r2_file_read_failed', __( 'Could not read the backup archive for upload.', 'zoe-cloud' ) );
+			return new WP_Error( 'zoecloud_cloud_file_read_failed', __( 'Could not read the backup archive for upload.', 'zoe-cloud' ) );
 		}
 
-		$headers = $this->build_signed_headers( $settings, 'PUT', $key, $body );
-		$url     = trailingslashit( $this->get_endpoint( $settings ) ) . rawurlencode( $settings['r2_bucket'] ) . '/' . $this->encode_key_path( $key );
+		$headers = $this->build_signed_headers( $config, 'PUT', $key, $body );
+		$url     = $this->build_upload_url( $config, $key );
 
 		$response = wp_remote_request(
 			$url,
@@ -96,15 +101,15 @@ class ZoeCloud_R2_Service {
 		$code = wp_remote_retrieve_response_code( $response );
 
 		if ( $code < 200 || $code >= 300 ) {
-			return new WP_Error( 'zoecloud_r2_upload_failed', __( 'R2 upload failed.', 'zoe-cloud' ), wp_remote_retrieve_body( $response ) );
+			return new WP_Error( 'zoecloud_cloud_upload_failed', sprintf( __( '%s upload failed.', 'zoe-cloud' ), $config['label'] ), wp_remote_retrieve_body( $response ) );
 		}
 
 		return array(
-			'provider' => 'r2',
-			'bucket'   => $settings['r2_bucket'],
+			'provider' => $provider,
+			'bucket'   => $config['bucket'],
 			'key'      => $key,
 			'filename' => $filename,
-			'endpoint' => $this->get_endpoint( $settings ),
+			'endpoint' => $config['endpoint'],
 		);
 	}
 
@@ -117,41 +122,99 @@ class ZoeCloud_R2_Service {
 		$settings = wp_parse_args(
 			get_option( $this->option_name, array() ),
 			array(
+				'storage_provider'      => 'r2',
 				'r2_account_id'        => '',
 				'r2_access_key_id'     => '',
 				'r2_secret_access_key' => '',
 				'r2_bucket'            => '',
 				'r2_prefix'            => 'zoe-cloud',
+				's3_access_key_id'     => '',
+				's3_secret_access_key' => '',
+				's3_bucket'            => '',
+				's3_region'            => 'us-east-1',
+				's3_prefix'            => 'zoe-cloud',
 			)
 		);
 
 		$settings['r2_secret_access_key'] = $this->crypto->decrypt( $settings['r2_secret_access_key'] );
+		$settings['s3_secret_access_key'] = $this->crypto->decrypt( $settings['s3_secret_access_key'] );
 
 		return $settings;
 	}
 
 	/**
-	 * Build the R2 S3-compatible endpoint.
+	 * Return the selected provider.
 	 *
 	 * @param array $settings Plugin settings.
 	 * @return string
 	 */
-	private function get_endpoint( array $settings ) {
+	private function get_provider( array $settings ) {
+		return 's3' === ( $settings['storage_provider'] ?? 'r2' ) ? 's3' : 'r2';
+	}
+
+	/**
+	 * Return provider-specific connection config.
+	 *
+	 * @param array  $settings Plugin settings.
+	 * @param string $provider Provider key.
+	 * @return array
+	 */
+	private function get_provider_config( array $settings, $provider ) {
+		if ( 's3' === $provider ) {
+			$region = $this->sanitize_region( $settings['s3_region'] );
+			$bucket = sanitize_text_field( (string) $settings['s3_bucket'] );
+
+			return array(
+				'provider'     => 's3',
+				'label'        => __( 'AWS S3', 'zoe-cloud' ),
+				'access_key'   => (string) $settings['s3_access_key_id'],
+				'secret_key'   => (string) $settings['s3_secret_access_key'],
+				'bucket'       => $bucket,
+				'prefix'       => (string) $settings['s3_prefix'],
+				'region'       => $region,
+				'endpoint'     => $bucket ? 'https://' . $bucket . '.s3.' . $region . '.amazonaws.com' : '',
+				'path_style'   => false,
+			);
+		}
+
 		$account_id = preg_replace( '/[^a-zA-Z0-9]/', '', (string) $settings['r2_account_id'] );
 
-		return $account_id ? 'https://' . $account_id . '.r2.cloudflarestorage.com' : '';
+		return array(
+			'provider'     => 'r2',
+			'label'        => __( 'Cloudflare R2', 'zoe-cloud' ),
+			'access_key'   => (string) $settings['r2_access_key_id'],
+			'secret_key'   => (string) $settings['r2_secret_access_key'],
+			'bucket'       => (string) $settings['r2_bucket'],
+			'prefix'       => (string) $settings['r2_prefix'],
+			'region'       => 'auto',
+			'endpoint'     => $account_id ? 'https://' . $account_id . '.r2.cloudflarestorage.com' : '',
+			'path_style'   => true,
+		);
+	}
+
+	/**
+	 * Check whether a provider has the minimum required settings.
+	 *
+	 * @param array  $settings Plugin settings.
+	 * @param string $provider Provider key.
+	 * @return bool
+	 */
+	private function is_configured( array $settings, $provider ) {
+		$config = $this->get_provider_config( $settings, $provider );
+
+		return ! empty( $config['endpoint'] ) && ! empty( $config['access_key'] ) && ! empty( $config['secret_key'] ) && ! empty( $config['bucket'] );
 	}
 
 	/**
 	 * Build object key.
 	 *
-	 * @param array  $settings Plugin settings.
+	 * @param string $prefix   Object prefix.
 	 * @param array  $manifest Backup manifest.
 	 * @param string $filename Backup filename.
 	 * @return string
 	 */
-	private function build_object_key( array $settings, array $manifest, $filename ) {
-		$prefix = trim( (string) $settings['r2_prefix'], '/' );
+	private function build_object_key( $prefix, array $manifest, $filename ) {
+		$prefix = trim( (string) $prefix, '/' );
 		$domain = sanitize_title_with_dashes( (string) ( $manifest['domain'] ?? wp_parse_url( home_url(), PHP_URL_HOST ) ) );
 		$parts  = array_filter( array( $prefix, $domain, $filename ) );
 
@@ -159,22 +222,39 @@ class ZoeCloud_R2_Service {
 	}
 
 	/**
-	 * Build AWS Signature V4 headers for R2.
+	 * Build the upload URL.
 	 *
-	 * @param array  $settings Plugin settings.
+	 * @param array  $config Provider config.
+	 * @param string $key    Object key.
+	 * @return string
+	 */
+	private function build_upload_url( array $config, $key ) {
+		if ( ! empty( $config['path_style'] ) ) {
+			return trailingslashit( $config['endpoint'] ) . rawurlencode( $config['bucket'] ) . '/' . $this->encode_key_path( $key );
+		}
+
+		return trailingslashit( $config['endpoint'] ) . $this->encode_key_path( $key );
+	}
+
+	/**
+	 * Build AWS Signature V4 headers.
+	 *
+	 * @param array  $config   Provider config.
 	 * @param string $method   HTTP method.
 	 * @param string $key      Object key.
 	 * @param string $body     Request body.
 	 * @return array
 	 */
-	private function build_signed_headers( array $settings, $method, $key, $body ) {
+	private function build_signed_headers( array $config, $method, $key, $body ) {
 		$timestamp     = gmdate( 'Ymd\THis\Z' );
 		$date          = gmdate( 'Ymd' );
-		$region        = 'auto';
+		$region        = $config['region'];
 		$service       = 's3';
-		$host          = wp_parse_url( $this->get_endpoint( $settings ), PHP_URL_HOST );
+		$host          = wp_parse_url( $config['endpoint'], PHP_URL_HOST );
 		$payload_hash  = hash( 'sha256', $body );
-		$canonical_uri = '/' . rawurlencode( $settings['r2_bucket'] ) . '/' . $this->encode_key_path( $key );
+		$canonical_uri = ! empty( $config['path_style'] )
+			? '/' . rawurlencode( $config['bucket'] ) . '/' . $this->encode_key_path( $key )
+			: '/' . $this->encode_key_path( $key );
 
 		$headers = array(
 			'content-type'         => 'application/zip',
@@ -210,11 +290,11 @@ class ZoeCloud_R2_Service {
 				hash( 'sha256', $canonical_request ),
 			)
 		);
-		$signing_key       = $this->get_signing_key( $settings['r2_secret_access_key'], $date, $region, $service );
+		$signing_key       = $this->get_signing_key( $config['secret_key'], $date, $region, $service );
 		$signature         = hash_hmac( 'sha256', $string_to_sign, $signing_key );
 
 		return array(
-			'Authorization'        => 'AWS4-HMAC-SHA256 Credential=' . $settings['r2_access_key_id'] . '/' . $credential_scope . ', SignedHeaders=' . $signed_headers . ', Signature=' . $signature,
+			'Authorization'        => 'AWS4-HMAC-SHA256 Credential=' . $config['access_key'] . '/' . $credential_scope . ', SignedHeaders=' . $signed_headers . ', Signature=' . $signature,
 			'Content-Type'         => $headers['content-type'],
 			'Host'                 => $headers['host'],
 			'X-Amz-Content-Sha256' => $headers['x-amz-content-sha256'],
@@ -247,5 +327,17 @@ class ZoeCloud_R2_Service {
 	 */
 	private function encode_key_path( $key ) {
 		return implode( '/', array_map( 'rawurlencode', explode( '/', ltrim( (string) $key, '/' ) ) ) );
+	}
+
+	/**
+	 * Normalize an AWS region string.
+	 *
+	 * @param string $region Raw region.
+	 * @return string
+	 */
+	private function sanitize_region( $region ) {
+		$region = strtolower( preg_replace( '/[^a-z0-9-]/', '', (string) $region ) );
+
+		return $region ? $region : 'us-east-1';
 	}
 }

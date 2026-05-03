@@ -2,7 +2,7 @@
 
 ZoeCloud is a WordPress backup plugin focused on portable backups, safe restores, and cloud storage integrations.
 
-The current implementation supports local backup creation, local downloads, restore validation, restore execution, retention limits, scheduled backups, and Cloudflare R2 uploads.
+The current implementation supports local backup creation, local downloads, restore validation, restore execution, retention limits, scheduled backups, and cloud uploads to Cloudflare R2 or AWS S3.
 
 ## Features
 
@@ -16,7 +16,7 @@ The current implementation supports local backup creation, local downloads, rest
 - Preserve ZoeCloud backup records after restore.
 - Delete local backups from the dashboard.
 - Run manual and scheduled backups.
-- Upload backups to Cloudflare R2.
+- Upload backups to Cloudflare R2 or AWS S3.
 - Store cloud secrets encrypted in WordPress options.
 - Process backup jobs in stages to reduce timeout risk.
 
@@ -43,7 +43,7 @@ manifest.json
 - PHP `ZipArchive` extension
 - Writable WordPress uploads directory
 - WP-Cron enabled for scheduled/background jobs
-- Outbound internet access for Cloudflare R2 uploads
+- Outbound internet access for cloud uploads
 
 ## Installation
 
@@ -51,12 +51,16 @@ manifest.json
 2. Activate ZoeCloud in the WordPress admin.
 3. Open the `ZoeCloud` admin menu.
 4. Confirm the preflight checks pass.
-5. Configure Cloudflare R2 if cloud uploads are required.
+5. Configure Cloudflare R2 or AWS S3 if cloud uploads are required.
 6. Create a backup from the dashboard.
 
-## Cloudflare R2 Configuration
+## Cloud Storage Configuration
 
-ZoeCloud uses Cloudflare R2 through the S3-compatible API. No OAuth or redirect URI is required.
+ZoeCloud stores cloud backups through S3-compatible APIs. Select the active provider in `ZoeCloud > Storage`.
+
+### Cloudflare R2
+
+No OAuth or redirect URI is required.
 
 Required settings:
 
@@ -82,8 +86,33 @@ Recommended Cloudflare setup:
 
 1. Create an R2 bucket.
 2. Create S3 API credentials scoped to that bucket.
-3. Save the credentials in `ZoeCloud > Settings`.
-4. Enable `Upload to R2` when creating a backup.
+3. Select `Cloudflare R2` in `ZoeCloud > Storage`.
+4. Save the credentials.
+5. Enable `Upload to cloud storage` when creating a backup.
+
+### AWS S3
+
+Required settings:
+
+- `S3 Access Key ID`
+- `S3 Secret Access Key`
+- `S3 Bucket`
+- `S3 Region`, for example `us-east-1`
+- `S3 Prefix` optional, defaults to `zoe-cloud`
+
+Endpoint format:
+
+```text
+https://{bucket}.s3.{region}.amazonaws.com
+```
+
+Recommended AWS setup:
+
+1. Create an S3 bucket.
+2. Create an IAM user or access key with write permissions for that bucket.
+3. Select `AWS S3` in `ZoeCloud > Storage`.
+4. Save the credentials, bucket, region, and optional prefix.
+5. Enable `Upload to cloud storage` when creating a backup.
 
 ## Backup Workflow
 
@@ -95,7 +124,7 @@ The staged backup runner performs these steps:
 4. Add files to the ZIP in batches.
 5. Add `database.sql` and `manifest.json`.
 6. Store a local backup record.
-7. Upload to Cloudflare R2 when enabled.
+7. Upload to the selected cloud provider when enabled.
 8. Clean temporary files.
 
 ## Restore Workflow
@@ -122,19 +151,19 @@ ZoeCloud currently applies:
 - ZIP path traversal validation during restore.
 - Basic direct-access protection for the local backup directory.
 
-Use R2 credentials with the narrowest bucket permissions possible.
+Use cloud credentials with the narrowest bucket permissions possible.
 
 ## Current Limitations
 
-- Cloud restore from R2 is not implemented yet; backups are restored from local records/files.
+- Cloud restore from R2/S3 is not implemented yet; backups are restored from local records/files.
 - Manual upload of external ZIP files for restore is not implemented yet.
 - Incremental backups are not implemented yet.
 
 ## Roadmap
 
 - Restore from manually uploaded ZIP.
-- Download/import backups from R2.
-- Additional S3-compatible providers.
+- Download/import backups from cloud providers.
+- Additional S3-compatible providers beyond R2 and AWS S3.
 - Google Drive via OAuth broker.
 - Incremental backups.
 - SaaS dashboard.

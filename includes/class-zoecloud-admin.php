@@ -85,16 +85,24 @@ class ZoeCloud_Admin {
 	public function sanitize_settings( $settings ) {
 		$current = get_option( 'zoecloud_settings', array() );
 		$section = sanitize_key( $settings['settings_section'] ?? 'backup' );
+		$provider = sanitize_key( $settings['storage_provider'] ?? ( $current['storage_provider'] ?? 'r2' ) );
+		$provider = in_array( $provider, array( 'r2', 's3' ), true ) ? $provider : 'r2';
 		$clean   = array(
 			'drive_client_id'     => sanitize_text_field( $settings['drive_client_id'] ?? ( $current['drive_client_id'] ?? '' ) ),
 			'drive_client_secret' => '',
 			'drive_refresh_token' => '',
 			'drive_project_name'  => sanitize_text_field( $settings['drive_project_name'] ?? ( $current['drive_project_name'] ?? get_bloginfo( 'name' ) ) ),
+			'storage_provider'    => $provider,
 			'r2_account_id'        => sanitize_text_field( $settings['r2_account_id'] ?? ( $current['r2_account_id'] ?? '' ) ),
 			'r2_access_key_id'     => sanitize_text_field( $settings['r2_access_key_id'] ?? ( $current['r2_access_key_id'] ?? '' ) ),
 			'r2_secret_access_key' => '',
 			'r2_bucket'            => sanitize_text_field( $settings['r2_bucket'] ?? ( $current['r2_bucket'] ?? '' ) ),
-			'r2_prefix'            => $this->sanitize_r2_prefix( $settings['r2_prefix'] ?? ( $current['r2_prefix'] ?? 'zoe-cloud' ) ),
+			'r2_prefix'            => $this->sanitize_storage_prefix( $settings['r2_prefix'] ?? ( $current['r2_prefix'] ?? 'zoe-cloud' ) ),
+			's3_access_key_id'     => sanitize_text_field( $settings['s3_access_key_id'] ?? ( $current['s3_access_key_id'] ?? '' ) ),
+			's3_secret_access_key' => '',
+			's3_bucket'            => sanitize_text_field( $settings['s3_bucket'] ?? ( $current['s3_bucket'] ?? '' ) ),
+			's3_region'            => $this->sanitize_s3_region( $settings['s3_region'] ?? ( $current['s3_region'] ?? 'us-east-1' ) ),
+			's3_prefix'            => $this->sanitize_storage_prefix( $settings['s3_prefix'] ?? ( $current['s3_prefix'] ?? 'zoe-cloud' ) ),
 			'retention_limit'      => max( 1, absint( $settings['retention_limit'] ?? ( $current['retention_limit'] ?? 10 ) ) ),
 			'schedule'             => sanitize_text_field( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) ),
 			'auto_upload_drive'    => 'backup' === $section ? ( ! empty( $settings['auto_upload_drive'] ) ? 1 : 0 ) : absint( $current['auto_upload_drive'] ?? 1 ),
@@ -104,6 +112,7 @@ class ZoeCloud_Admin {
 		$client_secret = trim( (string) ( $settings['drive_client_secret'] ?? '' ) );
 		$refresh_token = trim( (string) ( $settings['drive_refresh_token'] ?? '' ) );
 		$r2_secret     = trim( (string) ( $settings['r2_secret_access_key'] ?? '' ) );
+		$s3_secret     = trim( (string) ( $settings['s3_secret_access_key'] ?? '' ) );
 
 		$clean['drive_client_secret'] = '' !== $client_secret
 			? $this->crypto->encrypt( $client_secret )
@@ -117,16 +126,20 @@ class ZoeCloud_Admin {
 			? $this->crypto->encrypt( $r2_secret )
 			: ( $current['r2_secret_access_key'] ?? '' );
 
+		$clean['s3_secret_access_key'] = '' !== $s3_secret
+			? $this->crypto->encrypt( $s3_secret )
+			: ( $current['s3_secret_access_key'] ?? '' );
+
 		return $clean;
 	}
 
 	/**
-	 * Sanitize an R2 object prefix.
+	 * Sanitize a cloud object prefix.
 	 *
 	 * @param string $prefix Raw prefix.
 	 * @return string
 	 */
-	private function sanitize_r2_prefix( $prefix ) {
+	private function sanitize_storage_prefix( $prefix ) {
 		$prefix = trim( wp_normalize_path( (string) $prefix ), '/' );
 
 		if ( false !== strpos( $prefix, '..' ) ) {
@@ -134,6 +147,18 @@ class ZoeCloud_Admin {
 		}
 
 		return sanitize_text_field( $prefix );
+	}
+
+	/**
+	 * Sanitize an AWS region.
+	 *
+	 * @param string $region Raw region.
+	 * @return string
+	 */
+	private function sanitize_s3_region( $region ) {
+		$region = strtolower( preg_replace( '/[^a-z0-9-]/', '', (string) $region ) );
+
+		return $region ? $region : 'us-east-1';
 	}
 
 	/**
@@ -210,10 +235,15 @@ class ZoeCloud_Admin {
 			array(
 				'drive_client_id'    => '',
 				'drive_project_name' => get_bloginfo( 'name' ),
+				'storage_provider'   => 'r2',
 				'r2_account_id'       => '',
 				'r2_access_key_id'    => '',
 				'r2_bucket'           => '',
 				'r2_prefix'           => 'zoe-cloud',
+				's3_access_key_id'    => '',
+				's3_bucket'           => '',
+				's3_region'           => 'us-east-1',
+				's3_prefix'           => 'zoe-cloud',
 				'retention_limit'    => 10,
 				'schedule'           => 'daily',
 				'auto_upload_drive'  => 1,
@@ -231,7 +261,7 @@ class ZoeCloud_Admin {
 				</div>
 				<div class="zoecloud-hero-badge">
 					<span><?php esc_html_e( 'Backup Engine', 'zoe-cloud' ); ?></span>
-					<strong><?php esc_html_e( 'Local + R2', 'zoe-cloud' ); ?></strong>
+					<strong><?php esc_html_e( 'Local + Cloud', 'zoe-cloud' ); ?></strong>
 				</div>
 			</header>
 
@@ -248,7 +278,7 @@ class ZoeCloud_Admin {
 						<div class="zoecloud-actions">
 							<button type="button" class="button button-primary zoecloud-primary-action" id="zoecloud-create-backup"><?php esc_html_e( 'Create Backup', 'zoe-cloud' ); ?></button>
 							<label><input type="checkbox" id="zoecloud-include-core"> <?php esc_html_e( 'Include WordPress core', 'zoe-cloud' ); ?></label>
-							<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to R2', 'zoe-cloud' ); ?></label>
+							<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to cloud storage', 'zoe-cloud' ); ?></label>
 						</div>
 						<div id="zoecloud-feedback" class="zoecloud-feedback"></div>
 						<div id="zoecloud-job-status" class="zoecloud-job-status"></div>
@@ -276,7 +306,7 @@ class ZoeCloud_Admin {
 									</td>
 								</tr>
 								<tr>
-									<th scope="row"><?php esc_html_e( 'Auto-upload to R2', 'zoe-cloud' ); ?></th>
+									<th scope="row"><?php esc_html_e( 'Auto-upload to cloud', 'zoe-cloud' ); ?></th>
 									<td><label><input type="checkbox" name="zoecloud_settings[auto_upload_drive]" value="1" <?php checked( $settings['auto_upload_drive'], 1 ); ?>> <?php esc_html_e( 'Upload every scheduled backup', 'zoe-cloud' ); ?></label></td>
 								</tr>
 								<tr>
@@ -342,12 +372,13 @@ class ZoeCloud_Admin {
 						<input type="hidden" name="zoecloud_settings[settings_section]" value="storage">
 						<table class="form-table">
 							<tr>
-								<th scope="row"><?php esc_html_e( 'Cloudflare R2 Status', 'zoe-cloud' ); ?></th>
+								<th scope="row"><?php esc_html_e( 'Active Provider Status', 'zoe-cloud' ); ?></th>
 								<td>
 									<div class="zoecloud-drive-connection">
 										<span class="zoecloud-drive-status <?php echo $cloud_status['configured'] ? 'is-connected' : 'is-disconnected'; ?>">
 											<?php echo esc_html( $cloud_status['configured'] ? __( 'Configured', 'zoe-cloud' ) : __( 'Not configured', 'zoe-cloud' ) ); ?>
 										</span>
+										<strong><?php echo esc_html( $cloud_status['label'] ?? strtoupper( $cloud_status['provider'] ?? 'r2' ) ); ?></strong>
 										<?php if ( ! empty( $cloud_status['endpoint'] ) ) : ?>
 											<code><?php echo esc_html( $cloud_status['endpoint'] ); ?></code>
 										<?php endif; ?>
@@ -355,32 +386,82 @@ class ZoeCloud_Admin {
 								</td>
 							</tr>
 							<tr>
-								<th scope="row"><label for="zoecloud_r2_account_id"><?php esc_html_e( 'R2 Account ID', 'zoe-cloud' ); ?></label></th>
-								<td><input type="text" id="zoecloud_r2_account_id" name="zoecloud_settings[r2_account_id]" class="regular-text" value="<?php echo esc_attr( $settings['r2_account_id'] ); ?>"></td>
-							</tr>
-							<tr>
-								<th scope="row"><label for="zoecloud_r2_access_key_id"><?php esc_html_e( 'R2 Access Key ID', 'zoe-cloud' ); ?></label></th>
-								<td><input type="text" id="zoecloud_r2_access_key_id" name="zoecloud_settings[r2_access_key_id]" class="regular-text" value="<?php echo esc_attr( $settings['r2_access_key_id'] ); ?>"></td>
-							</tr>
-							<tr>
-								<th scope="row"><label for="zoecloud_r2_secret_access_key"><?php esc_html_e( 'R2 Secret Access Key', 'zoe-cloud' ); ?></label></th>
+								<th scope="row"><label for="zoecloud_storage_provider"><?php esc_html_e( 'Provider', 'zoe-cloud' ); ?></label></th>
 								<td>
-									<input type="password" id="zoecloud_r2_secret_access_key" name="zoecloud_settings[r2_secret_access_key]" class="regular-text" value="">
-									<p class="description"><?php esc_html_e( 'Leave blank to keep the saved secret.', 'zoe-cloud' ); ?></p>
-								</td>
-							</tr>
-							<tr>
-								<th scope="row"><label for="zoecloud_r2_bucket"><?php esc_html_e( 'R2 Bucket', 'zoe-cloud' ); ?></label></th>
-								<td><input type="text" id="zoecloud_r2_bucket" name="zoecloud_settings[r2_bucket]" class="regular-text" value="<?php echo esc_attr( $settings['r2_bucket'] ); ?>"></td>
-							</tr>
-							<tr>
-								<th scope="row"><label for="zoecloud_r2_prefix"><?php esc_html_e( 'R2 Prefix', 'zoe-cloud' ); ?></label></th>
-								<td>
-									<input type="text" id="zoecloud_r2_prefix" name="zoecloud_settings[r2_prefix]" class="regular-text" value="<?php echo esc_attr( $settings['r2_prefix'] ); ?>">
-									<p class="description"><?php esc_html_e( 'Optional folder prefix inside the bucket, for example zoe-cloud.', 'zoe-cloud' ); ?></p>
+									<select id="zoecloud_storage_provider" name="zoecloud_settings[storage_provider]">
+										<option value="r2" <?php selected( $settings['storage_provider'], 'r2' ); ?>><?php esc_html_e( 'Cloudflare R2', 'zoe-cloud' ); ?></option>
+										<option value="s3" <?php selected( $settings['storage_provider'], 's3' ); ?>><?php esc_html_e( 'AWS S3', 'zoe-cloud' ); ?></option>
+									</select>
 								</td>
 							</tr>
 						</table>
+
+						<div class="zoecloud-provider-fields" data-zoecloud-provider-fields="r2" <?php echo 'r2' === $settings['storage_provider'] ? '' : 'hidden'; ?>>
+							<h3><?php esc_html_e( 'Cloudflare R2', 'zoe-cloud' ); ?></h3>
+							<table class="form-table">
+								<tr>
+									<th scope="row"><label for="zoecloud_r2_account_id"><?php esc_html_e( 'R2 Account ID', 'zoe-cloud' ); ?></label></th>
+									<td><input type="text" id="zoecloud_r2_account_id" name="zoecloud_settings[r2_account_id]" class="regular-text" value="<?php echo esc_attr( $settings['r2_account_id'] ); ?>"></td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_r2_access_key_id"><?php esc_html_e( 'R2 Access Key ID', 'zoe-cloud' ); ?></label></th>
+									<td><input type="text" id="zoecloud_r2_access_key_id" name="zoecloud_settings[r2_access_key_id]" class="regular-text" value="<?php echo esc_attr( $settings['r2_access_key_id'] ); ?>"></td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_r2_secret_access_key"><?php esc_html_e( 'R2 Secret Access Key', 'zoe-cloud' ); ?></label></th>
+									<td>
+										<input type="password" id="zoecloud_r2_secret_access_key" name="zoecloud_settings[r2_secret_access_key]" class="regular-text" value="">
+										<p class="description"><?php esc_html_e( 'Leave blank to keep the saved secret.', 'zoe-cloud' ); ?></p>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_r2_bucket"><?php esc_html_e( 'R2 Bucket', 'zoe-cloud' ); ?></label></th>
+									<td><input type="text" id="zoecloud_r2_bucket" name="zoecloud_settings[r2_bucket]" class="regular-text" value="<?php echo esc_attr( $settings['r2_bucket'] ); ?>"></td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_r2_prefix"><?php esc_html_e( 'R2 Prefix', 'zoe-cloud' ); ?></label></th>
+									<td>
+										<input type="text" id="zoecloud_r2_prefix" name="zoecloud_settings[r2_prefix]" class="regular-text" value="<?php echo esc_attr( $settings['r2_prefix'] ); ?>">
+										<p class="description"><?php esc_html_e( 'Optional folder prefix inside the bucket, for example zoe-cloud.', 'zoe-cloud' ); ?></p>
+									</td>
+								</tr>
+							</table>
+						</div>
+
+						<div class="zoecloud-provider-fields" data-zoecloud-provider-fields="s3" <?php echo 's3' === $settings['storage_provider'] ? '' : 'hidden'; ?>>
+							<h3><?php esc_html_e( 'AWS S3', 'zoe-cloud' ); ?></h3>
+							<table class="form-table">
+								<tr>
+									<th scope="row"><label for="zoecloud_s3_access_key_id"><?php esc_html_e( 'S3 Access Key ID', 'zoe-cloud' ); ?></label></th>
+									<td><input type="text" id="zoecloud_s3_access_key_id" name="zoecloud_settings[s3_access_key_id]" class="regular-text" value="<?php echo esc_attr( $settings['s3_access_key_id'] ); ?>"></td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_s3_secret_access_key"><?php esc_html_e( 'S3 Secret Access Key', 'zoe-cloud' ); ?></label></th>
+									<td>
+										<input type="password" id="zoecloud_s3_secret_access_key" name="zoecloud_settings[s3_secret_access_key]" class="regular-text" value="">
+										<p class="description"><?php esc_html_e( 'Leave blank to keep the saved secret.', 'zoe-cloud' ); ?></p>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_s3_bucket"><?php esc_html_e( 'S3 Bucket', 'zoe-cloud' ); ?></label></th>
+									<td><input type="text" id="zoecloud_s3_bucket" name="zoecloud_settings[s3_bucket]" class="regular-text" value="<?php echo esc_attr( $settings['s3_bucket'] ); ?>"></td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_s3_region"><?php esc_html_e( 'S3 Region', 'zoe-cloud' ); ?></label></th>
+									<td>
+										<input type="text" id="zoecloud_s3_region" name="zoecloud_settings[s3_region]" class="regular-text" value="<?php echo esc_attr( $settings['s3_region'] ); ?>" placeholder="us-east-1">
+										<p class="description"><?php esc_html_e( 'Use the AWS region where the bucket exists, for example us-east-1 or eu-west-1.', 'zoe-cloud' ); ?></p>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_s3_prefix"><?php esc_html_e( 'S3 Prefix', 'zoe-cloud' ); ?></label></th>
+									<td>
+										<input type="text" id="zoecloud_s3_prefix" name="zoecloud_settings[s3_prefix]" class="regular-text" value="<?php echo esc_attr( $settings['s3_prefix'] ); ?>">
+										<p class="description"><?php esc_html_e( 'Optional folder prefix inside the bucket, for example zoe-cloud.', 'zoe-cloud' ); ?></p>
+									</td>
+								</tr>
+							</table>
+						</div>
 						<?php submit_button( __( 'Save Storage Settings', 'zoe-cloud' ) ); ?>
 					</form>
 				</section>

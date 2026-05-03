@@ -181,7 +181,7 @@ class ZoeCloud_Backup_Manager {
 
 		if ( ! empty( $args['upload_drive'] ) ) {
 			if ( $job_id ) {
-				$this->update_job( $job_id, 'running', 85, __( 'Uploading backup to Cloudflare R2.', 'zoe-cloud' ) );
+				$this->update_job( $job_id, 'running', 85, __( 'Uploading backup to cloud storage.', 'zoe-cloud' ) );
 			}
 
 			$cloud_upload = $this->cloud_service->upload_backup( $archive_path, $manifest );
@@ -658,7 +658,7 @@ class ZoeCloud_Backup_Manager {
 		$state['backup_id'] = $record['id'];
 
 		if ( ! empty( $job['args']['upload_drive'] ) ) {
-			$this->advance_job( $job['id'], 'upload_drive', 90, __( 'Uploading backup to Cloudflare R2.', 'zoe-cloud' ), $state );
+			$this->advance_job( $job['id'], 'upload_drive', 90, __( 'Uploading backup to cloud storage.', 'zoe-cloud' ), $state );
 		} else {
 			$this->advance_job( $job['id'], 'cleanup', 95, __( 'Cleaning up temporary files.', 'zoe-cloud' ), $state, array( 'backup_id' => $record['id'] ) );
 		}

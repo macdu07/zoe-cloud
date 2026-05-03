@@ -16,6 +16,8 @@
 		restoreFeedback: document.getElementById( 'zoecloud-restore-feedback' ),
 		tabs: document.querySelectorAll( '[data-zoecloud-tab]' ),
 		tabPanels: document.querySelectorAll( '[data-zoecloud-panel]' ),
+		storageProvider: document.getElementById( 'zoecloud_storage_provider' ),
+		providerFields: document.querySelectorAll( '[data-zoecloud-provider-fields]' ),
 		jobStatusTimer: null,
 		keepFinalJobStatus: false,
 	};
@@ -189,8 +191,9 @@
 
 	const refresh = async () => {
 		const status = await request( 'status' );
+		const cloudLabel = status.cloud.label || ( status.cloud.provider ? status.cloud.provider.toUpperCase() : 'Cloud storage' );
 		state.statusText.textContent = status.cloud.configured
-			? `Cloudflare R2 configured for ${ status.cloud.bucket || 'bucket' }.`
+			? `${ cloudLabel } configured for ${ status.cloud.bucket || 'bucket' }.`
 			: 'Cloud storage not configured yet. Backups will be created locally.';
 		if ( state.uploadCloud ) {
 			state.uploadCloud.checked = !! status.cloud.configured;
@@ -223,9 +226,20 @@
 		}
 	};
 
+	const updateProviderFields = () => {
+		const provider = state.storageProvider?.value || 'r2';
+
+		state.providerFields.forEach( ( fieldset ) => {
+			fieldset.hidden = fieldset.dataset.zoecloudProviderFields !== provider;
+		} );
+	};
+
 	state.tabs.forEach( ( tab ) => {
 		tab.addEventListener( 'click', () => activateTab( tab.dataset.zoecloudTab ) );
 	} );
+
+	state.storageProvider?.addEventListener( 'change', updateProviderFields );
+	updateProviderFields();
 
 	document.querySelectorAll( '.zoecloud-tab-panel form' ).forEach( ( form ) => {
 		form.addEventListener( 'submit', () => {
