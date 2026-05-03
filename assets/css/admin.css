@@ -1,0 +1,39 @@
+.zoecloud-admin {
+	max-width: 1200px;
+}
+
+.zoecloud-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: 20px;
+	margin: 24px 0;
+}
+
+.zoecloud-card {
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 10px;
+	padding: 24px;
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.04);
+}
+
+.zoecloud-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: center;
+	margin-top: 16px;
+}
+
+.zoecloud-feedback {
+	margin-top: 16px;
+	font-weight: 600;
+}
+
+.zoecloud-feedback.is-error {
+	color: #b32d2e;
+}
+
+.zoecloud-list {
+	margin-top: 24px;
+}
