@@ -18,12 +18,21 @@ class ZoeCloud_Admin {
 	private $crypto;
 
 	/**
+	 * Cloud service.
+	 *
+	 * @var ZoeCloud_R2_Service
+	 */
+	private $cloud_service;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param ZoeCloud_Crypto $crypto Crypto service.
+	 * @param ZoeCloud_Crypto     $crypto        Crypto service.
+	 * @param ZoeCloud_R2_Service $cloud_service Cloud service.
 	 */
-	public function __construct( ZoeCloud_Crypto $crypto ) {
-		$this->crypto = $crypto;
+	public function __construct( ZoeCloud_Crypto $crypto, ZoeCloud_R2_Service $cloud_service ) {
+		$this->crypto        = $crypto;
+		$this->cloud_service = $cloud_service;
 	}
 
 	/**
@@ -80,6 +89,11 @@ class ZoeCloud_Admin {
 			'drive_client_secret' => '',
 			'drive_refresh_token' => '',
 			'drive_project_name'  => sanitize_text_field( $settings['drive_project_name'] ?? get_bloginfo( 'name' ) ),
+			'r2_account_id'        => sanitize_text_field( $settings['r2_account_id'] ?? '' ),
+			'r2_access_key_id'     => sanitize_text_field( $settings['r2_access_key_id'] ?? '' ),
+			'r2_secret_access_key' => '',
+			'r2_bucket'            => sanitize_text_field( $settings['r2_bucket'] ?? '' ),
+			'r2_prefix'            => $this->sanitize_r2_prefix( $settings['r2_prefix'] ?? 'zoe-cloud' ),
 			'retention_limit'     => max( 1, absint( $settings['retention_limit'] ?? 10 ) ),
 			'schedule'            => sanitize_text_field( $settings['schedule'] ?? 'daily' ),
 			'auto_upload_drive'   => ! empty( $settings['auto_upload_drive'] ) ? 1 : 0,
@@ -88,6 +102,7 @@ class ZoeCloud_Admin {
 
 		$client_secret = trim( (string) ( $settings['drive_client_secret'] ?? '' ) );
 		$refresh_token = trim( (string) ( $settings['drive_refresh_token'] ?? '' ) );
+		$r2_secret     = trim( (string) ( $settings['r2_secret_access_key'] ?? '' ) );
 
 		$clean['drive_client_secret'] = '' !== $client_secret
 			? $this->crypto->encrypt( $client_secret )
@@ -97,7 +112,27 @@ class ZoeCloud_Admin {
 			? $this->crypto->encrypt( $refresh_token )
 			: ( $current['drive_refresh_token'] ?? '' );
 
+		$clean['r2_secret_access_key'] = '' !== $r2_secret
+			? $this->crypto->encrypt( $r2_secret )
+			: ( $current['r2_secret_access_key'] ?? '' );
+
 		return $clean;
+	}
+
+	/**
+	 * Sanitize an R2 object prefix.
+	 *
+	 * @param string $prefix Raw prefix.
+	 * @return string
+	 */
+	private function sanitize_r2_prefix( $prefix ) {
+		$prefix = trim( wp_normalize_path( (string) $prefix ), '/' );
+
+		if ( false !== strpos( $prefix, '..' ) ) {
+			return 'zoe-cloud';
+		}
+
+		return sanitize_text_field( $prefix );
 	}
 
 	/**
@@ -174,6 +209,10 @@ class ZoeCloud_Admin {
 			array(
 				'drive_client_id'    => '',
 				'drive_project_name' => get_bloginfo( 'name' ),
+				'r2_account_id'       => '',
+				'r2_access_key_id'    => '',
+				'r2_bucket'           => '',
+				'r2_prefix'           => 'zoe-cloud',
 				'retention_limit'    => 10,
 				'schedule'           => 'daily',
 				'auto_upload_drive'  => 1,
@@ -181,6 +220,7 @@ class ZoeCloud_Admin {
 			)
 		);
 		$excluded_paths = is_array( $settings['excluded_paths'] ) ? implode( "\n", $settings['excluded_paths'] ) : (string) $settings['excluded_paths'];
+		$cloud_status   = $this->cloud_service->get_status();
 		?>
 		<div class="wrap zoecloud-admin">
 			<header class="zoecloud-hero">
@@ -190,7 +230,7 @@ class ZoeCloud_Admin {
 				</div>
 				<div class="zoecloud-hero-badge">
 					<span><?php esc_html_e( 'Backup Engine', 'zoe-cloud' ); ?></span>
-					<strong><?php esc_html_e( 'Local + Drive', 'zoe-cloud' ); ?></strong>
+					<strong><?php esc_html_e( 'Local + R2', 'zoe-cloud' ); ?></strong>
 				</div>
 			</header>
 
@@ -201,7 +241,7 @@ class ZoeCloud_Admin {
 					<div class="zoecloud-actions">
 						<button type="button" class="button button-primary zoecloud-primary-action" id="zoecloud-create-backup"><?php esc_html_e( 'Create Backup', 'zoe-cloud' ); ?></button>
 						<label><input type="checkbox" id="zoecloud-include-core"> <?php esc_html_e( 'Include WordPress core', 'zoe-cloud' ); ?></label>
-						<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to Drive', 'zoe-cloud' ); ?></label>
+						<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to R2', 'zoe-cloud' ); ?></label>
 					</div>
 					<div id="zoecloud-feedback" class="zoecloud-feedback"></div>
 					<div id="zoecloud-job-status" class="zoecloud-job-status"></div>
@@ -214,20 +254,43 @@ class ZoeCloud_Admin {
 						<?php settings_fields( 'zoecloud_settings' ); ?>
 						<table class="form-table">
 							<tr>
-								<th scope="row"><label for="zoecloud_drive_client_id"><?php esc_html_e( 'Google Client ID', 'zoe-cloud' ); ?></label></th>
-								<td><input type="text" id="zoecloud_drive_client_id" name="zoecloud_settings[drive_client_id]" class="regular-text" value="<?php echo esc_attr( $settings['drive_client_id'] ); ?>"></td>
+								<th scope="row"><?php esc_html_e( 'Cloudflare R2 Status', 'zoe-cloud' ); ?></th>
+								<td>
+									<div class="zoecloud-drive-connection">
+										<span class="zoecloud-drive-status <?php echo $cloud_status['configured'] ? 'is-connected' : 'is-disconnected'; ?>">
+											<?php echo esc_html( $cloud_status['configured'] ? __( 'Configured', 'zoe-cloud' ) : __( 'Not configured', 'zoe-cloud' ) ); ?>
+										</span>
+										<?php if ( ! empty( $cloud_status['endpoint'] ) ) : ?>
+											<code><?php echo esc_html( $cloud_status['endpoint'] ); ?></code>
+										<?php endif; ?>
+									</div>
+								</td>
 							</tr>
 							<tr>
-								<th scope="row"><label for="zoecloud_drive_client_secret"><?php esc_html_e( 'Google Client Secret', 'zoe-cloud' ); ?></label></th>
-								<td><input type="password" id="zoecloud_drive_client_secret" name="zoecloud_settings[drive_client_secret]" class="regular-text" value=""></td>
+								<th scope="row"><label for="zoecloud_r2_account_id"><?php esc_html_e( 'R2 Account ID', 'zoe-cloud' ); ?></label></th>
+								<td><input type="text" id="zoecloud_r2_account_id" name="zoecloud_settings[r2_account_id]" class="regular-text" value="<?php echo esc_attr( $settings['r2_account_id'] ); ?>"></td>
 							</tr>
 							<tr>
-								<th scope="row"><label for="zoecloud_drive_refresh_token"><?php esc_html_e( 'Google Refresh Token', 'zoe-cloud' ); ?></label></th>
-								<td><input type="password" id="zoecloud_drive_refresh_token" name="zoecloud_settings[drive_refresh_token]" class="regular-text" value=""></td>
+								<th scope="row"><label for="zoecloud_r2_access_key_id"><?php esc_html_e( 'R2 Access Key ID', 'zoe-cloud' ); ?></label></th>
+								<td><input type="text" id="zoecloud_r2_access_key_id" name="zoecloud_settings[r2_access_key_id]" class="regular-text" value="<?php echo esc_attr( $settings['r2_access_key_id'] ); ?>"></td>
 							</tr>
 							<tr>
-								<th scope="row"><label for="zoecloud_drive_project_name"><?php esc_html_e( 'Drive Project Folder', 'zoe-cloud' ); ?></label></th>
-								<td><input type="text" id="zoecloud_drive_project_name" name="zoecloud_settings[drive_project_name]" class="regular-text" value="<?php echo esc_attr( $settings['drive_project_name'] ); ?>"></td>
+								<th scope="row"><label for="zoecloud_r2_secret_access_key"><?php esc_html_e( 'R2 Secret Access Key', 'zoe-cloud' ); ?></label></th>
+								<td>
+									<input type="password" id="zoecloud_r2_secret_access_key" name="zoecloud_settings[r2_secret_access_key]" class="regular-text" value="">
+									<p class="description"><?php esc_html_e( 'Leave blank to keep the saved secret.', 'zoe-cloud' ); ?></p>
+								</td>
+							</tr>
+							<tr>
+								<th scope="row"><label for="zoecloud_r2_bucket"><?php esc_html_e( 'R2 Bucket', 'zoe-cloud' ); ?></label></th>
+								<td><input type="text" id="zoecloud_r2_bucket" name="zoecloud_settings[r2_bucket]" class="regular-text" value="<?php echo esc_attr( $settings['r2_bucket'] ); ?>"></td>
+							</tr>
+							<tr>
+								<th scope="row"><label for="zoecloud_r2_prefix"><?php esc_html_e( 'R2 Prefix', 'zoe-cloud' ); ?></label></th>
+								<td>
+									<input type="text" id="zoecloud_r2_prefix" name="zoecloud_settings[r2_prefix]" class="regular-text" value="<?php echo esc_attr( $settings['r2_prefix'] ); ?>">
+									<p class="description"><?php esc_html_e( 'Optional folder prefix inside the bucket, for example zoe-cloud.', 'zoe-cloud' ); ?></p>
+								</td>
 							</tr>
 							<tr>
 								<th scope="row"><label for="zoecloud_retention_limit"><?php esc_html_e( 'Retention Limit', 'zoe-cloud' ); ?></label></th>
@@ -244,7 +307,7 @@ class ZoeCloud_Admin {
 								</td>
 							</tr>
 							<tr>
-								<th scope="row"><?php esc_html_e( 'Auto-upload to Drive', 'zoe-cloud' ); ?></th>
+								<th scope="row"><?php esc_html_e( 'Auto-upload to R2', 'zoe-cloud' ); ?></th>
 								<td><label><input type="checkbox" name="zoecloud_settings[auto_upload_drive]" value="1" <?php checked( $settings['auto_upload_drive'], 1 ); ?>> <?php esc_html_e( 'Upload every scheduled backup', 'zoe-cloud' ); ?></label></td>
 							</tr>
 							<tr>
@@ -268,7 +331,7 @@ class ZoeCloud_Admin {
 							<th><?php esc_html_e( 'Date', 'zoe-cloud' ); ?></th>
 							<th><?php esc_html_e( 'File', 'zoe-cloud' ); ?></th>
 							<th><?php esc_html_e( 'Size', 'zoe-cloud' ); ?></th>
-							<th><?php esc_html_e( 'Drive', 'zoe-cloud' ); ?></th>
+							<th><?php esc_html_e( 'Cloud', 'zoe-cloud' ); ?></th>
 							<th><?php esc_html_e( 'Actions', 'zoe-cloud' ); ?></th>
 						</tr>
 					</thead>
@@ -303,4 +366,5 @@ class ZoeCloud_Admin {
 		</div>
 		<?php
 	}
+
 }

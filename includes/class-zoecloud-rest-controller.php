@@ -25,23 +25,23 @@ class ZoeCloud_REST_Controller {
 	private $restore_manager;
 
 	/**
-	 * Drive service.
+	 * Cloud service.
 	 *
-	 * @var ZoeCloud_Drive_Service
+	 * @var ZoeCloud_R2_Service
 	 */
-	private $drive_service;
+	private $cloud_service;
 
 	/**
 	 * Constructor.
 	 *
 	 * @param ZoeCloud_Backup_Manager  $backup_manager  Backup manager.
 	 * @param ZoeCloud_Restore_Manager $restore_manager Restore manager.
-	 * @param ZoeCloud_Drive_Service   $drive_service   Drive service.
+	 * @param ZoeCloud_R2_Service      $cloud_service   Cloud service.
 	 */
-	public function __construct( ZoeCloud_Backup_Manager $backup_manager, ZoeCloud_Restore_Manager $restore_manager, ZoeCloud_Drive_Service $drive_service ) {
+	public function __construct( ZoeCloud_Backup_Manager $backup_manager, ZoeCloud_Restore_Manager $restore_manager, ZoeCloud_R2_Service $cloud_service ) {
 		$this->backup_manager  = $backup_manager;
 		$this->restore_manager = $restore_manager;
-		$this->drive_service   = $drive_service;
+		$this->cloud_service   = $cloud_service;
 	}
 
 	/**
@@ -153,7 +153,7 @@ class ZoeCloud_REST_Controller {
 	public function get_status() {
 		return rest_ensure_response(
 			array(
-				'drive'     => $this->drive_service->get_status(),
+				'cloud'     => $this->cloud_service->get_status(),
 				'preflight' => $this->backup_manager->get_preflight_status(),
 				'backups'   => $this->backup_manager->list_backups(),
 				'jobs'      => array_values( $this->backup_manager->list_jobs() ),

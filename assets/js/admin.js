@@ -7,7 +7,7 @@
 		preflight: document.getElementById( 'zoecloud-preflight' ),
 		createButton: document.getElementById( 'zoecloud-create-backup' ),
 		includeCore: document.getElementById( 'zoecloud-include-core' ),
-		uploadDrive: document.getElementById( 'zoecloud-upload-drive' ),
+		uploadCloud: document.getElementById( 'zoecloud-upload-drive' ),
 		restoreFilename: document.getElementById( 'zoecloud-restore-filename' ),
 		restoreSearch: document.getElementById( 'zoecloud-restore-search' ),
 		restoreReplace: document.getElementById( 'zoecloud-restore-replace' ),
@@ -57,7 +57,7 @@
 						<td>${ backup.created_at || '' }</td>
 						<td>${ backup.filename || '' }</td>
 						<td>${ formatBytes( backup.size || 0 ) }</td>
-						<td>${ backup.drive && backup.drive.file_id ? 'Uploaded' : backup.drive_error ? backup.drive_error : 'Pending' }</td>
+						<td>${ renderCloudStatus( backup ) }</td>
 						<td>
 							<a class="button" href="${ backup.download_url || '#' }">Download</a>
 							<button type="button" class="button zoecloud-select-restore" data-filename="${ backup.filename || '' }">Select</button>
@@ -95,6 +95,26 @@
 		}
 
 		return `${ value.toFixed( value >= 10 || unitIndex === 0 ? 0 : 1 ) } ${ units[ unitIndex ] }`;
+	};
+
+	const renderCloudStatus = ( backup ) => {
+		if ( backup.cloud && backup.cloud.provider ) {
+			return `Uploaded to ${ backup.cloud.provider.toUpperCase() }`;
+		}
+
+		if ( backup.cloud_error ) {
+			return backup.cloud_error;
+		}
+
+		if ( backup.drive && backup.drive.file_id ) {
+			return 'Uploaded to Drive';
+		}
+
+		if ( backup.drive_error ) {
+			return backup.drive_error;
+		}
+
+		return 'Pending';
 	};
 
 	const renderPreflight = ( preflight ) => {
@@ -167,12 +187,12 @@
 
 	const refresh = async () => {
 		const status = await request( 'status' );
-		state.statusText.textContent = status.drive.configured
-			? `Drive configured for ${ status.drive.project_name || 'project' }.`
-			: 'Drive not configured yet. Backups will be created locally.';
-		if ( state.uploadDrive ) {
-			state.uploadDrive.checked = !! status.drive.configured;
-			state.uploadDrive.disabled = ! status.drive.configured;
+		state.statusText.textContent = status.cloud.configured
+			? `Cloudflare R2 configured for ${ status.cloud.bucket || 'bucket' }.`
+			: 'Cloud storage not configured yet. Backups will be created locally.';
+		if ( state.uploadCloud ) {
+			state.uploadCloud.checked = !! status.cloud.configured;
+			state.uploadCloud.disabled = ! status.cloud.configured;
 		}
 		renderPreflight( status.preflight );
 		renderBackups( status.backups || [] );
@@ -193,7 +213,7 @@
 				method: 'POST',
 				body: {
 					include_core: !! state.includeCore?.checked,
-					upload_drive: !! state.uploadDrive?.checked,
+					upload_drive: !! state.uploadCloud?.checked,
 				},
 			} );
 			setFeedback( 'Backup job queued.' );

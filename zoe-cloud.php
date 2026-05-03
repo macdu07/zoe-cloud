@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ZoeCloud
  * Plugin URI: https://example.com/zoe-cloud
- * Description: WordPress backups with portable archives, restore tooling, and Google Drive uploads.
+ * Description: WordPress backups with portable archives, restore tooling, and cloud uploads.
  * Version: 0.1.0
  * Author: ZoeCloud
  * Text Domain: zoe-cloud
@@ -22,6 +22,7 @@ define( 'ZOECLOUD_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ZOECLOUD_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-crypto.php';
+require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-r2-service.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-drive-service.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-backup-manager.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-restore-manager.php';

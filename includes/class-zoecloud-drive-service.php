@@ -112,8 +112,156 @@ class ZoeCloud_Drive_Service {
 
 		return array(
 			'configured'   => ! empty( $settings['drive_client_id'] ) && ! empty( $settings['drive_client_secret'] ) && ! empty( $settings['drive_refresh_token'] ),
+			'credentials'  => ! empty( $settings['drive_client_id'] ) && ! empty( $settings['drive_client_secret'] ),
 			'project_name' => $settings['drive_project_name'],
+			'redirect_uri' => $this->get_redirect_uri(),
 		);
+	}
+
+	/**
+	 * Return OAuth redirect URI.
+	 *
+	 * @return string
+	 */
+	public function get_redirect_uri() {
+		return admin_url( 'admin-post.php?action=zoecloud_drive_callback' );
+	}
+
+	/**
+	 * Start the OAuth connection flow.
+	 *
+	 * @return void
+	 */
+	public function handle_connect() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You are not allowed to connect Google Drive.', 'zoe-cloud' ), '', array( 'response' => 403 ) );
+		}
+
+		check_admin_referer( 'zoecloud_drive_connect' );
+
+		$settings = $this->get_settings();
+
+		if ( empty( $settings['drive_client_id'] ) || empty( $settings['drive_client_secret'] ) ) {
+			wp_safe_redirect( add_query_arg( 'zoecloud_drive', 'missing_credentials', admin_url( 'admin.php?page=zoecloud' ) ) );
+			exit;
+		}
+
+		$state = wp_generate_password( 32, false, false );
+		set_transient( 'zoecloud_drive_oauth_state_' . $state, get_current_user_id(), 10 * MINUTE_IN_SECONDS );
+
+		$url = add_query_arg(
+			array(
+				'client_id'               => $settings['drive_client_id'],
+				'redirect_uri'            => $this->get_redirect_uri(),
+				'response_type'           => 'code',
+				'scope'                   => 'https://www.googleapis.com/auth/drive.file',
+				'access_type'             => 'offline',
+				'prompt'                  => 'consent',
+				'include_granted_scopes'  => 'true',
+				'state'                   => $state,
+			),
+			'https://accounts.google.com/o/oauth2/v2/auth'
+		);
+
+		wp_redirect( $url ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
+		exit;
+	}
+
+	/**
+	 * Complete the OAuth callback.
+	 *
+	 * @return void
+	 */
+	public function handle_callback() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You are not allowed to connect Google Drive.', 'zoe-cloud' ), '', array( 'response' => 403 ) );
+		}
+
+		$state = isset( $_GET['state'] ) ? sanitize_text_field( wp_unslash( $_GET['state'] ) ) : '';
+		$code  = isset( $_GET['code'] ) ? sanitize_text_field( wp_unslash( $_GET['code'] ) ) : '';
+		$error = isset( $_GET['error'] ) ? sanitize_text_field( wp_unslash( $_GET['error'] ) ) : '';
+
+		if ( $error ) {
+			wp_safe_redirect( add_query_arg( 'zoecloud_drive', 'denied', admin_url( 'admin.php?page=zoecloud' ) ) );
+			exit;
+		}
+
+		if ( empty( $state ) || empty( $code ) || false === get_transient( 'zoecloud_drive_oauth_state_' . $state ) ) {
+			wp_safe_redirect( add_query_arg( 'zoecloud_drive', 'invalid_state', admin_url( 'admin.php?page=zoecloud' ) ) );
+			exit;
+		}
+
+		delete_transient( 'zoecloud_drive_oauth_state_' . $state );
+
+		$result = $this->exchange_code_for_tokens( $code );
+
+		if ( is_wp_error( $result ) ) {
+			wp_safe_redirect( add_query_arg( 'zoecloud_drive', 'token_error', admin_url( 'admin.php?page=zoecloud' ) ) );
+			exit;
+		}
+
+		wp_safe_redirect( add_query_arg( 'zoecloud_drive', 'connected', admin_url( 'admin.php?page=zoecloud' ) ) );
+		exit;
+	}
+
+	/**
+	 * Disconnect Google Drive.
+	 *
+	 * @return void
+	 */
+	public function handle_disconnect() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'You are not allowed to disconnect Google Drive.', 'zoe-cloud' ), '', array( 'response' => 403 ) );
+		}
+
+		check_admin_referer( 'zoecloud_drive_disconnect' );
+
+		$settings = get_option( $this->option_name, array() );
+		unset( $settings['drive_refresh_token'] );
+		update_option( $this->option_name, $settings, false );
+
+		wp_safe_redirect( add_query_arg( 'zoecloud_drive', 'disconnected', admin_url( 'admin.php?page=zoecloud' ) ) );
+		exit;
+	}
+
+	/**
+	 * Exchange an OAuth code for tokens and store the refresh token.
+	 *
+	 * @param string $code Authorization code.
+	 * @return true|WP_Error
+	 */
+	private function exchange_code_for_tokens( $code ) {
+		$settings = $this->get_settings();
+		$response = wp_remote_post(
+			'https://oauth2.googleapis.com/token',
+			array(
+				'timeout' => 30,
+				'body'    => array(
+					'client_id'     => $settings['drive_client_id'],
+					'client_secret' => $settings['drive_client_secret'],
+					'code'          => $code,
+					'grant_type'    => 'authorization_code',
+					'redirect_uri'  => $this->get_redirect_uri(),
+				),
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$data = json_decode( wp_remote_retrieve_body( $response ), true );
+		$code = wp_remote_retrieve_response_code( $response );
+
+		if ( $code < 200 || $code >= 300 || empty( $data['refresh_token'] ) ) {
+			return new WP_Error( 'zoecloud_drive_token_exchange_failed', __( 'Could not connect Google Drive.', 'zoe-cloud' ), $data );
+		}
+
+		$stored = get_option( $this->option_name, array() );
+		$stored['drive_refresh_token'] = $this->crypto->encrypt( $data['refresh_token'] );
+		update_option( $this->option_name, $stored, false );
+
+		return true;
 	}
 
 	/**

@@ -208,6 +208,56 @@
 	color: var(--zoe-coral);
 }
 
+.zoecloud-drive-notice {
+	background: rgba(214, 239, 253, 0.68);
+	border: 1px solid rgba(17, 99, 244, 0.22);
+	border-radius: 8px;
+	color: var(--zoe-navy);
+	font-weight: 700;
+	margin: 0 0 18px;
+	padding: 12px 14px;
+}
+
+.zoecloud-drive-notice-denied,
+.zoecloud-drive-notice-invalid_state,
+.zoecloud-drive-notice-missing_credentials,
+.zoecloud-drive-notice-token_error {
+	background: rgba(245, 100, 128, 0.1);
+	border-color: rgba(245, 100, 128, 0.32);
+	color: var(--zoe-coral);
+}
+
+.zoecloud-drive-connection {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.zoecloud-drive-status {
+	align-items: center;
+	background: var(--zoe-soft);
+	border: 1px solid var(--zoe-gray);
+	border-radius: 999px;
+	color: var(--zoe-muted);
+	display: inline-flex;
+	font-size: 12px;
+	font-weight: 800;
+	min-height: 30px;
+	padding: 0 12px;
+	text-transform: uppercase;
+}
+
+.zoecloud-drive-status.is-connected {
+	background: rgba(214, 239, 253, 0.72);
+	border-color: rgba(17, 99, 244, 0.22);
+	color: var(--zoe-blue);
+}
+
+.zoecloud-drive-status.is-disconnected {
+	background: rgba(220, 224, 231, 0.48);
+}
+
 .zoecloud-job-status {
 	margin-top: 16px;
 }

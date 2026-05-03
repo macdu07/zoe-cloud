@@ -11,11 +11,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class ZoeCloud_Backup_Manager {
 	/**
-	 * Drive service.
+	 * Cloud service.
 	 *
-	 * @var ZoeCloud_Drive_Service
+	 * @var ZoeCloud_R2_Service
 	 */
-	private $drive_service;
+	private $cloud_service;
 
 	/**
 	 * Number of rows read per database batch.
@@ -48,10 +48,10 @@ class ZoeCloud_Backup_Manager {
 	/**
 	 * Constructor.
 	 *
-	 * @param ZoeCloud_Drive_Service $drive_service Drive service.
+	 * @param ZoeCloud_R2_Service $cloud_service Cloud service.
 	 */
-	public function __construct( ZoeCloud_Drive_Service $drive_service ) {
-		$this->drive_service = $drive_service;
+	public function __construct( ZoeCloud_R2_Service $cloud_service ) {
+		$this->cloud_service = $cloud_service;
 	}
 
 	/**
@@ -176,20 +176,20 @@ class ZoeCloud_Backup_Manager {
 			'download_url' => $this->build_download_url( $filename ),
 			'size'         => file_exists( $archive_path ) ? filesize( $archive_path ) : 0,
 			'manifest'     => $manifest,
-			'drive'        => null,
+			'cloud'        => null,
 		);
 
 		if ( ! empty( $args['upload_drive'] ) ) {
 			if ( $job_id ) {
-				$this->update_job( $job_id, 'running', 85, __( 'Uploading backup to Google Drive.', 'zoe-cloud' ) );
+				$this->update_job( $job_id, 'running', 85, __( 'Uploading backup to Cloudflare R2.', 'zoe-cloud' ) );
 			}
 
-			$drive_upload = $this->drive_service->upload_backup( $archive_path, $manifest );
+			$cloud_upload = $this->cloud_service->upload_backup( $archive_path, $manifest );
 
-			if ( ! is_wp_error( $drive_upload ) ) {
-				$record['drive'] = $drive_upload;
+			if ( ! is_wp_error( $cloud_upload ) ) {
+				$record['cloud'] = $cloud_upload;
 			} else {
-				$record['drive_error'] = $drive_upload->get_error_message();
+				$record['cloud_error'] = $cloud_upload->get_error_message();
 			}
 		}
 
@@ -305,7 +305,7 @@ class ZoeCloud_Backup_Manager {
 						$result = $this->process_job_finalize( $job );
 						break;
 					case 'upload_drive':
-						$result = $this->process_job_drive_upload( $job );
+						$result = $this->process_job_cloud_upload( $job );
 						break;
 					case 'cleanup':
 						$result = $this->process_job_cleanup( $job );
@@ -650,7 +650,7 @@ class ZoeCloud_Backup_Manager {
 			'download_url' => $this->build_download_url( $state['filename'] ),
 			'size'         => file_exists( $state['archive_path'] ) ? filesize( $state['archive_path'] ) : 0,
 			'manifest'     => $state['manifest'],
-			'drive'        => null,
+			'cloud'        => null,
 		);
 
 		$this->store_record( $record );
@@ -658,7 +658,7 @@ class ZoeCloud_Backup_Manager {
 		$state['backup_id'] = $record['id'];
 
 		if ( ! empty( $job['args']['upload_drive'] ) ) {
-			$this->advance_job( $job['id'], 'upload_drive', 90, __( 'Uploading backup to Google Drive.', 'zoe-cloud' ), $state );
+			$this->advance_job( $job['id'], 'upload_drive', 90, __( 'Uploading backup to Cloudflare R2.', 'zoe-cloud' ), $state );
 		} else {
 			$this->advance_job( $job['id'], 'cleanup', 95, __( 'Cleaning up temporary files.', 'zoe-cloud' ), $state, array( 'backup_id' => $record['id'] ) );
 		}
@@ -667,19 +667,19 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Upload the finished archive to Drive when configured.
+	 * Upload the finished archive to cloud storage when configured.
 	 *
 	 * @param array $job Job data.
 	 * @return true|WP_Error
 	 */
-	private function process_job_drive_upload( array $job ) {
+	private function process_job_cloud_upload( array $job ) {
 		$state        = $job['state'];
-		$drive_upload = $this->drive_service->upload_backup( $state['archive_path'], $state['manifest'] );
+		$cloud_upload = $this->cloud_service->upload_backup( $state['archive_path'], $state['manifest'] );
 
-		if ( is_wp_error( $drive_upload ) ) {
-			$this->attach_drive_error_to_backup( $state['backup_id'], $drive_upload->get_error_message() );
+		if ( is_wp_error( $cloud_upload ) ) {
+			$this->attach_cloud_error_to_backup( $state['backup_id'], $cloud_upload->get_error_message() );
 		} else {
-			$this->attach_drive_upload_to_backup( $state['backup_id'], $drive_upload );
+			$this->attach_cloud_upload_to_backup( $state['backup_id'], $cloud_upload );
 		}
 
 		$this->advance_job( $job['id'], 'cleanup', 95, __( 'Cleaning up temporary files.', 'zoe-cloud' ), $state, array( 'backup_id' => $state['backup_id'] ) );
@@ -1401,19 +1401,19 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Attach Drive upload metadata to a stored backup.
+	 * Attach cloud upload metadata to a stored backup.
 	 *
 	 * @param string $backup_id Backup ID.
-	 * @param array  $upload    Drive upload payload.
+	 * @param array  $upload    Cloud upload payload.
 	 * @return void
 	 */
-	private function attach_drive_upload_to_backup( $backup_id, array $upload ) {
+	private function attach_cloud_upload_to_backup( $backup_id, array $upload ) {
 		$records = $this->list_backups();
 
 		foreach ( $records as &$record ) {
 			if ( isset( $record['id'] ) && $record['id'] === $backup_id ) {
-				$record['drive'] = $upload;
-				unset( $record['drive_error'] );
+				$record['cloud'] = $upload;
+				unset( $record['cloud_error'] );
 				break;
 			}
 		}
@@ -1422,18 +1422,18 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Attach Drive upload error to a stored backup.
+	 * Attach cloud upload error to a stored backup.
 	 *
 	 * @param string $backup_id Backup ID.
 	 * @param string $message   Error message.
 	 * @return void
 	 */
-	private function attach_drive_error_to_backup( $backup_id, $message ) {
+	private function attach_cloud_error_to_backup( $backup_id, $message ) {
 		$records = $this->list_backups();
 
 		foreach ( $records as &$record ) {
 			if ( isset( $record['id'] ) && $record['id'] === $backup_id ) {
-				$record['drive_error'] = $message;
+				$record['cloud_error'] = $message;
 				break;
 			}
 		}

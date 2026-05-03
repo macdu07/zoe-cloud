@@ -24,11 +24,11 @@ class ZoeCloud_Plugin {
 	 */
 	public function boot() {
 		$crypto          = new ZoeCloud_Crypto();
-		$drive_service   = new ZoeCloud_Drive_Service( $crypto );
-		$this->backup_manager = new ZoeCloud_Backup_Manager( $drive_service );
+		$r2_service      = new ZoeCloud_R2_Service( $crypto );
+		$this->backup_manager = new ZoeCloud_Backup_Manager( $r2_service );
 		$restore_manager = new ZoeCloud_Restore_Manager();
-		$rest_controller = new ZoeCloud_REST_Controller( $this->backup_manager, $restore_manager, $drive_service );
-		$admin           = new ZoeCloud_Admin( $crypto );
+		$rest_controller = new ZoeCloud_REST_Controller( $this->backup_manager, $restore_manager, $r2_service );
+		$admin           = new ZoeCloud_Admin( $crypto, $r2_service );
 
 		add_action( 'rest_api_init', array( $rest_controller, 'register_routes' ) );
 		add_action( 'zoecloud_run_scheduled_backup', array( $this->backup_manager, 'run_scheduled_backup' ) );
@@ -50,6 +50,11 @@ class ZoeCloud_Plugin {
 			'drive_client_secret' => '',
 			'drive_refresh_token' => '',
 			'drive_project_name'  => get_bloginfo( 'name' ),
+			'r2_account_id'        => '',
+			'r2_access_key_id'     => '',
+			'r2_secret_access_key' => '',
+			'r2_bucket'            => '',
+			'r2_prefix'            => 'zoe-cloud',
 			'retention_limit'     => 10,
 			'schedule'            => 'daily',
 			'auto_upload_drive'   => 1,
