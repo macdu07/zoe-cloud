@@ -256,7 +256,7 @@ class ZoeCloud_Admin {
 		<div class="wrap zoecloud-admin">
 			<header class="zoecloud-hero">
 				<div>
-					<img class="zoecloud-logo" src="<?php echo esc_url( ZOECLOUD_PLUGIN_URL . 'zoecloud-logo-horizontal.svg' ); ?>" alt="<?php esc_attr_e( 'ZoeCloud', 'zoe-cloud' ); ?>">
+					<img class="zoecloud-logo" src="<?php echo esc_url( ZOECLOUD_PLUGIN_URL . 'assets/images/zoecloud-logo-horizontal.svg' ); ?>" alt="<?php esc_attr_e( 'ZoeCloud', 'zoe-cloud' ); ?>">
 					<p><?php esc_html_e( 'Backups portables, restauración segura y sincronización cloud desde WordPress.', 'zoe-cloud' ); ?></p>
 				</div>
 				<div class="zoecloud-hero-badge">

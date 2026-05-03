@@ -4,3 +4,8 @@ vendor/
 *.log
 dist/
 build/
+
+PROMPT.md
+
+.claude/
+.gemini/
