@@ -15,6 +15,7 @@
 		runRestore: document.getElementById( 'zoecloud-run-restore' ),
 		restoreFeedback: document.getElementById( 'zoecloud-restore-feedback' ),
 		jobStatusTimer: null,
+		keepFinalJobStatus: false,
 	};
 
 	if ( ! state.table || ! window.zoecloudAdmin ) {
@@ -126,6 +127,7 @@
 		}
 
 		window.clearTimeout( state.jobStatusTimer );
+		state.keepFinalJobStatus = [ 'completed', 'failed' ].includes( job.status );
 		state.jobStatus.innerHTML = `
 			<div class="zoecloud-progress">
 				<div class="zoecloud-progress-bar" style="width: ${ job.progress || 0 }%"></div>
@@ -137,6 +139,7 @@
 	const clearJobStatusLater = () => {
 		window.clearTimeout( state.jobStatusTimer );
 		state.jobStatusTimer = window.setTimeout( () => {
+			state.keepFinalJobStatus = false;
 			if ( state.jobStatus ) {
 				state.jobStatus.innerHTML = '';
 			}
@@ -151,6 +154,9 @@
 		const active = ( jobs || [] ).find( ( job ) => [ 'queued', 'running' ].includes( job.status ) );
 
 		if ( ! active ) {
+			if ( state.keepFinalJobStatus ) {
+				return;
+			}
 			window.clearTimeout( state.jobStatusTimer );
 			state.jobStatus.innerHTML = '';
 			return;
@@ -265,6 +271,7 @@
 			} );
 			setFeedback( 'Backup deleted.' );
 			window.clearTimeout( state.jobStatusTimer );
+			state.keepFinalJobStatus = false;
 			if ( state.jobStatus ) {
 				state.jobStatus.innerHTML = '';
 			}
