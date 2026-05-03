@@ -41,6 +41,23 @@
 	margin: 20px 0 0;
 }
 
+.zoecloud-job-status {
+	margin-top: 16px;
+}
+
+.zoecloud-progress {
+	background: #dcdcde;
+	border-radius: 4px;
+	height: 10px;
+	overflow: hidden;
+}
+
+.zoecloud-progress-bar {
+	background: #2271b1;
+	height: 100%;
+	transition: width 180ms ease;
+}
+
 .zoecloud-preflight li {
 	margin: 0;
 }

@@ -3,6 +3,7 @@
 		table: document.getElementById( 'zoecloud-backups-table' ),
 		statusText: document.getElementById( 'zoecloud-status-text' ),
 		feedback: document.getElementById( 'zoecloud-feedback' ),
+		jobStatus: document.getElementById( 'zoecloud-job-status' ),
 		preflight: document.getElementById( 'zoecloud-preflight' ),
 		createButton: document.getElementById( 'zoecloud-create-backup' ),
 		includeCore: document.getElementById( 'zoecloud-include-core' ),
@@ -58,6 +59,7 @@
 						<td>
 							<a class="button" href="${ backup.download_url || '#' }">Download</a>
 							<button type="button" class="button zoecloud-select-restore" data-filename="${ backup.filename || '' }">Select</button>
+							<button type="button" class="button zoecloud-delete-backup" data-id="${ backup.id || backup.filename || '' }" data-filename="${ backup.filename || '' }">Delete</button>
 						</td>
 					</tr>
 				`
@@ -105,6 +107,7 @@
 			[ 'Free disk', preflight.disk_free_bytes === null ? 'Unknown' : formatBytes( preflight.disk_free_bytes ) ],
 			[ 'Memory limit', preflight.memory_limit || 'Unknown' ],
 			[ 'Max execution time', preflight.max_execution_time || 'Unknown' ],
+			[ 'WP-Cron disabled', preflight.wp_cron_disabled ? 'Yes' : 'No' ],
 		];
 
 		state.preflight.innerHTML = rows
@@ -114,6 +117,26 @@
 		if ( state.createButton ) {
 			state.createButton.disabled = ! preflight.ready;
 		}
+	};
+
+	const renderJobs = ( jobs ) => {
+		if ( ! state.jobStatus ) {
+			return;
+		}
+
+		const active = ( jobs || [] ).find( ( job ) => [ 'queued', 'running' ].includes( job.status ) );
+
+		if ( ! active ) {
+			state.jobStatus.innerHTML = '';
+			return;
+		}
+
+		state.jobStatus.innerHTML = `
+			<div class="zoecloud-progress">
+				<div class="zoecloud-progress-bar" style="width: ${ active.progress || 0 }%"></div>
+			</div>
+			<p>${ active.message || 'Working…' } ${ active.progress || 0 }%</p>
+		`;
 	};
 
 	const refresh = async () => {
@@ -127,6 +150,7 @@
 		}
 		renderPreflight( status.preflight );
 		renderBackups( status.backups || [] );
+		renderJobs( status.jobs || [] );
 	};
 
 	const setFeedback = ( message, isError = false ) => {
@@ -136,18 +160,18 @@
 
 	state.createButton?.addEventListener( 'click', async () => {
 		state.createButton.disabled = true;
-		setFeedback( 'Creating backup…' );
+		setFeedback( 'Queueing backup…' );
 
 		try {
-			const result = await request( 'backups', {
+			const job = await request( 'backups', {
 				method: 'POST',
 				body: {
 					include_core: !! state.includeCore?.checked,
 					upload_drive: !! state.uploadDrive?.checked,
 				},
 			} );
-			setFeedback( result.drive_error ? `Backup created locally. Drive upload failed: ${ result.drive_error }` : 'Backup created successfully.' );
-			await refresh();
+			setFeedback( 'Backup job queued.' );
+			await pollJob( job.id );
 		} catch ( error ) {
 			setFeedback( error.message, true );
 		} finally {
@@ -156,15 +180,66 @@
 	} );
 
 	state.table.addEventListener( 'click', ( event ) => {
-		const button = event.target.closest( '.zoecloud-select-restore' );
+		const restoreButton = event.target.closest( '.zoecloud-select-restore' );
+		const deleteButton = event.target.closest( '.zoecloud-delete-backup' );
 
-		if ( ! button || ! state.restoreFilename ) {
+		if ( deleteButton ) {
+			deleteBackup( deleteButton.dataset.id || '', deleteButton.dataset.filename || '' );
 			return;
 		}
 
-		state.restoreFilename.value = button.dataset.filename || '';
+		if ( ! restoreButton || ! state.restoreFilename ) {
+			return;
+		}
+
+		state.restoreFilename.value = restoreButton.dataset.filename || '';
 		setRestoreFeedback( `Selected ${ state.restoreFilename.value } for restore.` );
 	} );
+
+	const pollJob = async ( jobId ) => {
+		if ( ! jobId ) {
+			return;
+		}
+
+		let keepPolling = true;
+
+		while ( keepPolling ) {
+			const job = await request( `jobs/${ encodeURIComponent( jobId ) }` );
+			renderJobs( [ job ] );
+
+			if ( 'completed' === job.status ) {
+				setFeedback( job.message || 'Backup completed.' );
+				await refresh();
+				keepPolling = false;
+			} else if ( 'failed' === job.status ) {
+				setFeedback( job.message || 'Backup failed.', true );
+				await refresh();
+				keepPolling = false;
+			} else {
+				await new Promise( ( resolve ) => setTimeout( resolve, 2000 ) );
+			}
+		}
+	};
+
+	const deleteBackup = async ( backupId, filename ) => {
+		if ( ! backupId ) {
+			return;
+		}
+
+		if ( ! window.confirm( `Delete ${ filename || 'this backup' }?` ) ) {
+			return;
+		}
+
+		try {
+			await request( `backups/${ encodeURIComponent( backupId ) }`, {
+				method: 'DELETE',
+			} );
+			setFeedback( 'Backup deleted.' );
+			await refresh();
+		} catch ( error ) {
+			setFeedback( error.message, true );
+		}
+	};
 
 	const setRestoreFeedback = ( message, isError = false ) => {
 		if ( ! state.restoreFeedback ) {

@@ -196,6 +196,7 @@ class ZoeCloud_Admin {
 						<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to Drive', 'zoe-cloud' ); ?></label>
 					</div>
 					<div id="zoecloud-feedback" class="zoecloud-feedback"></div>
+					<div id="zoecloud-job-status" class="zoecloud-job-status"></div>
 					<ul id="zoecloud-preflight" class="zoecloud-preflight"></ul>
 				</section>
 

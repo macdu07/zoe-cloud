@@ -32,6 +32,7 @@ class ZoeCloud_Plugin {
 
 		add_action( 'rest_api_init', array( $rest_controller, 'register_routes' ) );
 		add_action( 'zoecloud_run_scheduled_backup', array( $this->backup_manager, 'run_scheduled_backup' ) );
+		add_action( 'zoecloud_run_backup_job', array( $this->backup_manager, 'run_backup_job' ) );
 		add_action( 'admin_post_zoecloud_download_backup', array( $this->backup_manager, 'stream_backup_download' ) );
 		add_action( 'update_option_zoecloud_settings', array( $this, 'sync_schedule' ), 10, 2 );
 

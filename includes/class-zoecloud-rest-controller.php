@@ -79,6 +79,36 @@ class ZoeCloud_REST_Controller {
 
 		register_rest_route(
 			'zoecloud/v1',
+			'/backups/(?P<id>[^/]+)',
+			array(
+				'methods'             => WP_REST_Server::DELETABLE,
+				'callback'            => array( $this, 'delete_backup' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
+			'/jobs',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'list_jobs' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
+			'/jobs/(?P<id>[^/]+)',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'get_job' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
 			'/restore',
 			array(
 				array(
@@ -116,6 +146,7 @@ class ZoeCloud_REST_Controller {
 				'drive'     => $this->drive_service->get_status(),
 				'preflight' => $this->backup_manager->get_preflight_status(),
 				'backups'   => $this->backup_manager->list_backups(),
+				'jobs'      => array_values( $this->backup_manager->list_jobs() ),
 			)
 		);
 	}
@@ -136,7 +167,7 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function create_backup( WP_REST_Request $request ) {
-		$result = $this->backup_manager->create_backup(
+		$result = $this->backup_manager->enqueue_backup(
 			array(
 				'include_core' => (bool) $request->get_param( 'include_core' ),
 				'upload_drive' => (bool) $request->get_param( 'upload_drive' ),
@@ -147,7 +178,52 @@ class ZoeCloud_REST_Controller {
 			return $result;
 		}
 
-		return new WP_REST_Response( $result, 201 );
+		return new WP_REST_Response( $result, 202 );
+	}
+
+	/**
+	 * Delete a backup.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function delete_backup( WP_REST_Request $request ) {
+		$result = $this->backup_manager->delete_backup( (string) $request['id'] );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return rest_ensure_response(
+			array(
+				'deleted' => true,
+			)
+		);
+	}
+
+	/**
+	 * List jobs.
+	 *
+	 * @return WP_REST_Response
+	 */
+	public function list_jobs() {
+		return rest_ensure_response( array_values( $this->backup_manager->list_jobs() ) );
+	}
+
+	/**
+	 * Get a job.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function get_job( WP_REST_Request $request ) {
+		$job = $this->backup_manager->get_job( (string) $request['id'] );
+
+		if ( empty( $job ) ) {
+			return new WP_Error( 'zoecloud_job_missing', __( 'Job not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		}
+
+		return rest_ensure_response( $job );
 	}
 
 	/**
