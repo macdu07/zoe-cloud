@@ -14,6 +14,7 @@
 		validateRestore: document.getElementById( 'zoecloud-validate-restore' ),
 		runRestore: document.getElementById( 'zoecloud-run-restore' ),
 		restoreFeedback: document.getElementById( 'zoecloud-restore-feedback' ),
+		jobStatusTimer: null,
 	};
 
 	if ( ! state.table || ! window.zoecloudAdmin ) {
@@ -119,6 +120,29 @@
 		}
 	};
 
+	const renderJobStatus = ( job ) => {
+		if ( ! state.jobStatus ) {
+			return;
+		}
+
+		window.clearTimeout( state.jobStatusTimer );
+		state.jobStatus.innerHTML = `
+			<div class="zoecloud-progress">
+				<div class="zoecloud-progress-bar" style="width: ${ job.progress || 0 }%"></div>
+			</div>
+			<p>${ job.message || 'Working...' } ${ job.progress || 0 }%</p>
+		`;
+	};
+
+	const clearJobStatusLater = () => {
+		window.clearTimeout( state.jobStatusTimer );
+		state.jobStatusTimer = window.setTimeout( () => {
+			if ( state.jobStatus ) {
+				state.jobStatus.innerHTML = '';
+			}
+		}, 6000 );
+	};
+
 	const renderJobs = ( jobs ) => {
 		if ( ! state.jobStatus ) {
 			return;
@@ -127,16 +151,10 @@
 		const active = ( jobs || [] ).find( ( job ) => [ 'queued', 'running' ].includes( job.status ) );
 
 		if ( ! active ) {
-			state.jobStatus.innerHTML = '';
 			return;
 		}
 
-		state.jobStatus.innerHTML = `
-			<div class="zoecloud-progress">
-				<div class="zoecloud-progress-bar" style="width: ${ active.progress || 0 }%"></div>
-			</div>
-			<p>${ active.message || 'Working…' } ${ active.progress || 0 }%</p>
-		`;
+		renderJobStatus( active );
 	};
 
 	const refresh = async () => {
@@ -212,14 +230,16 @@
 				} );
 			}
 
-			renderJobs( [ job ] );
+			renderJobStatus( job );
 
 			if ( 'completed' === job.status ) {
 				setFeedback( job.message || 'Backup completed.' );
+				clearJobStatusLater();
 				await refresh();
 				keepPolling = false;
 			} else if ( 'failed' === job.status ) {
 				setFeedback( job.message || 'Backup failed.', true );
+				clearJobStatusLater();
 				await refresh();
 				keepPolling = false;
 			} else {
