@@ -1,10 +1,13 @@
 <?php
 /**
  * Plugin Name: ZoeCloud
- * Plugin URI: https://example.com/zoe-cloud
+ * Plugin URI: https://maurouix.com/zoe-cloud
  * Description: WordPress backups with portable archives, restore tooling, and cloud uploads.
  * Version: 0.1.0
- * Author: ZoeCloud
+ * Author: Mauricio Correa
+ * Author URI: https://maurouix.com
+ * License: GPL-2.0-or-later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: zoe-cloud
  * Requires at least: 6.4
  * Requires PHP: 7.4
