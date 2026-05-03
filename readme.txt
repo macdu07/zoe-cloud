@@ -25,9 +25,9 @@ Funcionalidades actuales:
 * Descargar backups ZIP portables.
 * Restaurar backups existentes con reemplazo de URL.
 * Validar backups antes de restaurar.
-* Eliminar copias locales desde el dashboard.
+* Eliminar copias locales desde el dashboard y borrar objetos cloud subidos.
 * Ejecutar backups programados con WP-Cron.
-* Aplicar limite de retencion local.
+* Aplicar limite de retencion local y cloud.
 * Subir backups a Cloudflare R2 o AWS S3.
 * Guardar secretos cifrados en opciones de WordPress.
 

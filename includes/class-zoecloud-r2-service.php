@@ -103,7 +103,7 @@ class ZoeCloud_R2_Service {
 		if ( $code < 200 || $code >= 300 ) {
 			return new WP_Error(
 				'zoecloud_cloud_upload_failed',
-				$this->format_upload_error( $config, $response ),
+				$this->format_cloud_error( $config, $response, __( 'upload failed.', 'zoe-cloud' ) ),
 				wp_remote_retrieve_body( $response )
 			);
 		}
@@ -114,6 +114,62 @@ class ZoeCloud_R2_Service {
 			'key'      => $key,
 			'filename' => $filename,
 			'endpoint' => $config['endpoint'],
+		);
+	}
+
+	/**
+	 * Delete a stored cloud backup.
+	 *
+	 * @param array $cloud Cloud metadata saved with the backup record.
+	 * @return true|WP_Error
+	 */
+	public function delete_backup( array $cloud ) {
+		$settings = $this->get_settings();
+		$provider = $this->get_provider_from_cloud_record( $cloud );
+		$config   = $this->get_provider_config( $settings, $provider );
+
+		if ( empty( $cloud['key'] ) || empty( $cloud['bucket'] ) ) {
+			return new WP_Error( 'zoecloud_cloud_delete_missing_metadata', __( 'Cloud backup metadata is incomplete.', 'zoe-cloud' ) );
+		}
+
+		if ( $cloud['bucket'] !== $config['bucket'] ) {
+			$config['bucket'] = sanitize_text_field( (string) $cloud['bucket'] );
+			if ( 's3' === $provider ) {
+				$config['endpoint'] = $config['bucket'] ? 'https://' . $config['bucket'] . '.s3.' . $config['region'] . '.amazonaws.com' : '';
+			}
+		}
+
+		if ( ! $this->is_provider_configured( $config ) ) {
+			return new WP_Error( 'zoecloud_cloud_delete_not_configured', sprintf( __( '%s is not configured.', 'zoe-cloud' ), $config['label'] ) );
+		}
+
+		$key      = ltrim( (string) $cloud['key'], '/' );
+		$headers = $this->build_signed_headers( $config, 'DELETE', $key, '' );
+		$url     = $this->build_upload_url( $config, $key );
+
+		$response = wp_remote_request(
+			$url,
+			array(
+				'method'  => 'DELETE',
+				'timeout' => 60,
+				'headers' => $headers,
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+
+		if ( in_array( $code, array( 200, 202, 204, 404 ), true ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'zoecloud_cloud_delete_failed',
+			$this->format_cloud_error( $config, $response, __( 'delete failed.', 'zoe-cloud' ) ),
+			wp_remote_retrieve_body( $response )
 		);
 	}
 
@@ -154,6 +210,16 @@ class ZoeCloud_R2_Service {
 	 */
 	private function get_provider( array $settings ) {
 		return 's3' === ( $settings['storage_provider'] ?? 'r2' ) ? 's3' : 'r2';
+	}
+
+	/**
+	 * Resolve the provider used by a saved cloud backup record.
+	 *
+	 * @param array $cloud Cloud metadata.
+	 * @return string
+	 */
+	private function get_provider_from_cloud_record( array $cloud ) {
+		return 's3' === ( $cloud['provider'] ?? 'r2' ) ? 's3' : 'r2';
 	}
 
 	/**
@@ -206,6 +272,16 @@ class ZoeCloud_R2_Service {
 	private function is_configured( array $settings, $provider ) {
 		$config = $this->get_provider_config( $settings, $provider );
 
+		return $this->is_provider_configured( $config );
+	}
+
+	/**
+	 * Check whether provider config can make signed requests.
+	 *
+	 * @param array $config Provider config.
+	 * @return bool
+	 */
+	private function is_provider_configured( array $config ) {
 		return ! empty( $config['endpoint'] ) && ! empty( $config['access_key'] ) && ! empty( $config['secret_key'] ) && ! empty( $config['bucket'] );
 	}
 
@@ -334,19 +410,20 @@ class ZoeCloud_R2_Service {
 	}
 
 	/**
-	 * Build a useful upload error from an S3-compatible XML response.
+	 * Build a useful cloud error from an S3-compatible XML response.
 	 *
 	 * @param array $config   Provider config.
 	 * @param array $response HTTP response.
+	 * @param string $action  Failed action.
 	 * @return string
 	 */
-	private function format_upload_error( array $config, array $response ) {
+	private function format_cloud_error( array $config, array $response, $action ) {
 		$status          = wp_remote_retrieve_response_code( $response );
 		$body            = wp_remote_retrieve_body( $response );
 		$aws_code        = $this->extract_xml_value( $body, 'Code' );
 		$aws_message     = $this->extract_xml_value( $body, 'Message' );
 		$expected_region = wp_remote_retrieve_header( $response, 'x-amz-bucket-region' );
-		$parts           = array( sprintf( __( '%s upload failed.', 'zoe-cloud' ), $config['label'] ) );
+		$parts           = array( trim( $config['label'] . ' ' . $action ) );
 
 		if ( $status ) {
 			$parts[] = sprintf( __( 'HTTP %d.', 'zoe-cloud' ), $status );

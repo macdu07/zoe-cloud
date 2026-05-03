@@ -14,7 +14,7 @@ The current implementation supports local backup creation, local downloads, rest
 - Download generated ZIP files locally.
 - Restore an existing backup with URL search/replace.
 - Preserve ZoeCloud backup records after restore.
-- Delete local backups from the dashboard.
+- Delete local backups from the dashboard and remove uploaded cloud objects.
 - Run manual and scheduled backups.
 - Upload backups to Cloudflare R2 or AWS S3.
 - Store cloud secrets encrypted in WordPress options.

@@ -723,8 +723,9 @@ class ZoeCloud_Backup_Manager {
 				continue;
 			}
 
-			if ( ! empty( $record['path'] ) && file_exists( $record['path'] ) && ! unlink( $record['path'] ) ) {
-				return new WP_Error( 'zoecloud_backup_delete_failed', __( 'Could not delete the backup file.', 'zoe-cloud' ) );
+			$delete_result = $this->delete_backup_files( $record );
+			if ( is_wp_error( $delete_result ) ) {
+				return $delete_result;
 			}
 
 			unset( $records[ $index ] );
@@ -1080,12 +1081,36 @@ class ZoeCloud_Backup_Manager {
 		$active  = array_slice( $records, 0, $retention );
 
 		foreach ( $expired as $record ) {
-			if ( ! empty( $record['path'] ) && file_exists( $record['path'] ) ) {
-				unlink( $record['path'] );
+			$delete_result = $this->delete_backup_files( $record );
+
+			if ( is_wp_error( $delete_result ) ) {
+				$active[] = $record;
 			}
 		}
 
 		update_option( 'zoecloud_backups', $active, false );
+	}
+
+	/**
+	 * Delete local and cloud files for a backup record.
+	 *
+	 * @param array $record Backup record.
+	 * @return true|WP_Error
+	 */
+	private function delete_backup_files( array $record ) {
+		if ( ! empty( $record['cloud'] ) && is_array( $record['cloud'] ) ) {
+			$cloud_delete = $this->cloud_service->delete_backup( $record['cloud'] );
+
+			if ( is_wp_error( $cloud_delete ) ) {
+				return $cloud_delete;
+			}
+		}
+
+		if ( ! empty( $record['path'] ) && file_exists( $record['path'] ) && ! unlink( $record['path'] ) ) {
+			return new WP_Error( 'zoecloud_backup_delete_failed', __( 'Could not delete the backup file.', 'zoe-cloud' ) );
+		}
+
+		return true;
 	}
 
 	/**
