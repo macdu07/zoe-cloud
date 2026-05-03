@@ -83,6 +83,7 @@ class ZoeCloud_Admin {
 			'retention_limit'     => max( 1, absint( $settings['retention_limit'] ?? 10 ) ),
 			'schedule'            => sanitize_text_field( $settings['schedule'] ?? 'daily' ),
 			'auto_upload_drive'   => ! empty( $settings['auto_upload_drive'] ) ? 1 : 0,
+			'excluded_paths'      => $this->sanitize_excluded_paths( $settings['excluded_paths'] ?? '' ),
 		);
 
 		$client_secret = trim( (string) ( $settings['drive_client_secret'] ?? '' ) );
@@ -97,6 +98,33 @@ class ZoeCloud_Admin {
 			: ( $current['drive_refresh_token'] ?? '' );
 
 		return $clean;
+	}
+
+	/**
+	 * Sanitize newline-delimited backup exclusions.
+	 *
+	 * @param string|array $paths Raw paths.
+	 * @return array
+	 */
+	private function sanitize_excluded_paths( $paths ) {
+		if ( is_string( $paths ) ) {
+			$paths = preg_split( '/\r\n|\r|\n/', $paths );
+		}
+
+		$clean = array();
+
+		foreach ( (array) $paths as $path ) {
+			$path = trim( wp_normalize_path( (string) $path ) );
+			$path = ltrim( $path, '/' );
+
+			if ( '' === $path || false !== strpos( $path, '..' ) ) {
+				continue;
+			}
+
+			$clean[] = sanitize_text_field( $path );
+		}
+
+		return array_values( array_unique( $clean ) );
 	}
 
 	/**
@@ -149,8 +177,10 @@ class ZoeCloud_Admin {
 				'retention_limit'    => 10,
 				'schedule'           => 'daily',
 				'auto_upload_drive'  => 1,
+				'excluded_paths'     => array(),
 			)
 		);
+		$excluded_paths = is_array( $settings['excluded_paths'] ) ? implode( "\n", $settings['excluded_paths'] ) : (string) $settings['excluded_paths'];
 		?>
 		<div class="wrap zoecloud-admin">
 			<h1><?php esc_html_e( 'ZoeCloud', 'zoe-cloud' ); ?></h1>
@@ -166,6 +196,7 @@ class ZoeCloud_Admin {
 						<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to Drive', 'zoe-cloud' ); ?></label>
 					</div>
 					<div id="zoecloud-feedback" class="zoecloud-feedback"></div>
+					<ul id="zoecloud-preflight" class="zoecloud-preflight"></ul>
 				</section>
 
 				<section class="zoecloud-card">
@@ -207,6 +238,13 @@ class ZoeCloud_Admin {
 								<th scope="row"><?php esc_html_e( 'Auto-upload to Drive', 'zoe-cloud' ); ?></th>
 								<td><label><input type="checkbox" name="zoecloud_settings[auto_upload_drive]" value="1" <?php checked( $settings['auto_upload_drive'], 1 ); ?>> <?php esc_html_e( 'Upload every scheduled backup', 'zoe-cloud' ); ?></label></td>
 							</tr>
+							<tr>
+								<th scope="row"><label for="zoecloud_excluded_paths"><?php esc_html_e( 'Excluded Paths', 'zoe-cloud' ); ?></label></th>
+								<td>
+									<textarea id="zoecloud_excluded_paths" name="zoecloud_settings[excluded_paths]" class="large-text code" rows="5"><?php echo esc_textarea( $excluded_paths ); ?></textarea>
+									<p class="description"><?php esc_html_e( 'One path per line, relative to the WordPress root. Cache and ZoeCloud backup folders are excluded automatically.', 'zoe-cloud' ); ?></p>
+								</td>
+							</tr>
 						</table>
 						<?php submit_button(); ?>
 					</form>
@@ -220,14 +258,38 @@ class ZoeCloud_Admin {
 						<tr>
 							<th><?php esc_html_e( 'Date', 'zoe-cloud' ); ?></th>
 							<th><?php esc_html_e( 'File', 'zoe-cloud' ); ?></th>
+							<th><?php esc_html_e( 'Size', 'zoe-cloud' ); ?></th>
 							<th><?php esc_html_e( 'Drive', 'zoe-cloud' ); ?></th>
-							<th><?php esc_html_e( 'Download', 'zoe-cloud' ); ?></th>
+							<th><?php esc_html_e( 'Actions', 'zoe-cloud' ); ?></th>
 						</tr>
 					</thead>
 					<tbody id="zoecloud-backups-table">
-						<tr><td colspan="4"><?php esc_html_e( 'Loading backups…', 'zoe-cloud' ); ?></td></tr>
+						<tr><td colspan="5"><?php esc_html_e( 'Loading backups…', 'zoe-cloud' ); ?></td></tr>
 					</tbody>
 				</table>
+			</section>
+
+			<section class="zoecloud-card zoecloud-list">
+				<h2><?php esc_html_e( 'Restore', 'zoe-cloud' ); ?></h2>
+				<div class="zoecloud-restore-grid">
+					<label>
+						<?php esc_html_e( 'Backup', 'zoe-cloud' ); ?>
+						<select id="zoecloud-restore-filename"></select>
+					</label>
+					<label>
+						<?php esc_html_e( 'Search URL', 'zoe-cloud' ); ?>
+						<input type="url" id="zoecloud-restore-search" class="regular-text" value="<?php echo esc_attr( home_url() ); ?>">
+					</label>
+					<label>
+						<?php esc_html_e( 'Replace URL', 'zoe-cloud' ); ?>
+						<input type="url" id="zoecloud-restore-replace" class="regular-text" value="<?php echo esc_attr( home_url() ); ?>">
+					</label>
+				</div>
+				<div class="zoecloud-actions">
+					<button type="button" class="button" id="zoecloud-validate-restore"><?php esc_html_e( 'Validate Restore', 'zoe-cloud' ); ?></button>
+					<button type="button" class="button button-secondary" id="zoecloud-run-restore"><?php esc_html_e( 'Run Restore', 'zoe-cloud' ); ?></button>
+				</div>
+				<div id="zoecloud-restore-feedback" class="zoecloud-feedback"></div>
 			</section>
 		</div>
 		<?php

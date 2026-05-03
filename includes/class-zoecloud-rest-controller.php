@@ -81,9 +81,16 @@ class ZoeCloud_REST_Controller {
 			'zoecloud/v1',
 			'/restore',
 			array(
-				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => array( $this, 'restore_backup' ),
-				'permission_callback' => array( $this, 'permissions' ),
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => array( $this, 'validate_restore' ),
+					'permission_callback' => array( $this, 'permissions' ),
+				),
+				array(
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => array( $this, 'restore_backup' ),
+					'permission_callback' => array( $this, 'permissions' ),
+				),
 			)
 		);
 
@@ -106,8 +113,9 @@ class ZoeCloud_REST_Controller {
 	public function get_status() {
 		return rest_ensure_response(
 			array(
-				'drive'   => $this->drive_service->get_status(),
-				'backups' => $this->backup_manager->list_backups(),
+				'drive'     => $this->drive_service->get_status(),
+				'preflight' => $this->backup_manager->get_preflight_status(),
+				'backups'   => $this->backup_manager->list_backups(),
 			)
 		);
 	}
@@ -154,7 +162,8 @@ class ZoeCloud_REST_Controller {
 		$result   = $this->restore_manager->restore_backup(
 			$path,
 			(string) $request->get_param( 'search' ),
-			(string) $request->get_param( 'replace' )
+			(string) $request->get_param( 'replace' ),
+			(bool) $request->get_param( 'confirm' )
 		);
 
 		if ( is_wp_error( $result ) ) {
@@ -166,6 +175,24 @@ class ZoeCloud_REST_Controller {
 				'restored' => true,
 			)
 		);
+	}
+
+	/**
+	 * Validate a backup before restore.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function validate_restore( WP_REST_Request $request ) {
+		$filename = (string) $request->get_param( 'filename' );
+		$path     = $this->backup_manager->get_backup_path( $filename );
+		$result   = $this->restore_manager->get_restore_plan( $path );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return rest_ensure_response( $result );
 	}
 
 	/**

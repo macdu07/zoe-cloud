@@ -52,6 +52,7 @@ class ZoeCloud_Plugin {
 			'retention_limit'     => 10,
 			'schedule'            => 'daily',
 			'auto_upload_drive'   => 1,
+			'excluded_paths'      => array(),
 		);
 
 		if ( ! get_option( 'zoecloud_settings' ) ) {
