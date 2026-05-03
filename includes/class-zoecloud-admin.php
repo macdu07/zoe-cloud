@@ -183,15 +183,23 @@ class ZoeCloud_Admin {
 		$excluded_paths = is_array( $settings['excluded_paths'] ) ? implode( "\n", $settings['excluded_paths'] ) : (string) $settings['excluded_paths'];
 		?>
 		<div class="wrap zoecloud-admin">
-			<h1><?php esc_html_e( 'ZoeCloud', 'zoe-cloud' ); ?></h1>
-			<p><?php esc_html_e( 'Create portable backups, send them to Google Drive, and prepare restores from a single dashboard.', 'zoe-cloud' ); ?></p>
+			<header class="zoecloud-hero">
+				<div>
+					<img class="zoecloud-logo" src="<?php echo esc_url( ZOECLOUD_PLUGIN_URL . 'zoecloud-logo-horizontal.svg' ); ?>" alt="<?php esc_attr_e( 'ZoeCloud', 'zoe-cloud' ); ?>">
+					<p><?php esc_html_e( 'Backups portables, restauración segura y sincronización cloud desde WordPress.', 'zoe-cloud' ); ?></p>
+				</div>
+				<div class="zoecloud-hero-badge">
+					<span><?php esc_html_e( 'Backup Engine', 'zoe-cloud' ); ?></span>
+					<strong><?php esc_html_e( 'Local + Drive', 'zoe-cloud' ); ?></strong>
+				</div>
+			</header>
 
 			<div class="zoecloud-grid">
 				<section class="zoecloud-card">
 					<h2><?php esc_html_e( 'Backup Dashboard', 'zoe-cloud' ); ?></h2>
 					<p id="zoecloud-status-text"><?php esc_html_e( 'Loading status…', 'zoe-cloud' ); ?></p>
 					<div class="zoecloud-actions">
-						<button type="button" class="button button-primary" id="zoecloud-create-backup"><?php esc_html_e( 'Create Backup', 'zoe-cloud' ); ?></button>
+						<button type="button" class="button button-primary zoecloud-primary-action" id="zoecloud-create-backup"><?php esc_html_e( 'Create Backup', 'zoe-cloud' ); ?></button>
 						<label><input type="checkbox" id="zoecloud-include-core"> <?php esc_html_e( 'Include WordPress core', 'zoe-cloud' ); ?></label>
 						<label><input type="checkbox" id="zoecloud-upload-drive" checked> <?php esc_html_e( 'Upload to Drive', 'zoe-cloud' ); ?></label>
 					</div>
