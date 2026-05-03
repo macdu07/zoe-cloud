@@ -22,21 +22,28 @@ class ZoeCloud_Backup_Manager {
 	 *
 	 * @var int
 	 */
-	private $db_batch_size = 250;
+	private $db_batch_size = 1000;
 
 	/**
 	 * Number of database batches processed per cron tick.
 	 *
 	 * @var int
 	 */
-	private $db_batches_per_run = 4;
+	private $db_batches_per_run = 10;
 
 	/**
 	 * Number of files added to the zip per cron tick.
 	 *
 	 * @var int
 	 */
-	private $file_batch_size = 100;
+	private $file_batch_size = 500;
+
+	/**
+	 * Whether the current runner should avoid scheduling from each step.
+	 *
+	 * @var bool
+	 */
+	private $defer_scheduling = false;
 
 	/**
 	 * Constructor.
@@ -259,49 +266,74 @@ class ZoeCloud_Backup_Manager {
 	 * @param string $job_id Job ID.
 	 * @return void
 	 */
-	public function run_backup_job( $job_id ) {
-		$job = $this->get_job( $job_id );
+	public function run_backup_job( $job_id, $max_steps = 25, $time_budget = 20 ) {
+		$lock_key = 'zoecloud_job_lock_' . sanitize_key( $job_id );
 
-		if ( empty( $job ) || in_array( $job['status'], array( 'completed', 'failed' ), true ) ) {
+		if ( get_transient( $lock_key ) ) {
 			return;
 		}
 
-		$stage = isset( $job['stage'] ) ? $job['stage'] : 'init';
+		set_transient( $lock_key, 1, MINUTE_IN_SECONDS );
+		$this->defer_scheduling = true;
+		$started_at             = time();
+		$steps                  = 0;
 
-		try {
-			switch ( $stage ) {
-				case 'init':
-					$result = $this->process_job_init( $job );
-					break;
-				case 'export_database':
-					$result = $this->process_job_database( $job );
-					break;
-				case 'scan_files':
-					$result = $this->process_job_scan_files( $job );
-					break;
-				case 'zip_files':
-					$result = $this->process_job_zip_files( $job );
-					break;
-				case 'finalize':
-					$result = $this->process_job_finalize( $job );
-					break;
-				case 'upload_drive':
-					$result = $this->process_job_drive_upload( $job );
-					break;
-				case 'cleanup':
-					$result = $this->process_job_cleanup( $job );
-					break;
-				default:
-					$result = new WP_Error( 'zoecloud_job_stage_invalid', __( 'Backup job stage is invalid.', 'zoe-cloud' ) );
-					break;
+		do {
+			$job = $this->get_job( $job_id );
+
+			if ( empty( $job ) || in_array( $job['status'], array( 'completed', 'failed' ), true ) ) {
+				break;
 			}
-		} catch ( Exception $exception ) {
-			$result = new WP_Error( 'zoecloud_job_exception', $exception->getMessage() );
+
+			$stage = isset( $job['stage'] ) ? $job['stage'] : 'init';
+
+			try {
+				switch ( $stage ) {
+					case 'init':
+						$result = $this->process_job_init( $job );
+						break;
+					case 'export_database':
+						$result = $this->process_job_database( $job );
+						break;
+					case 'scan_files':
+						$result = $this->process_job_scan_files( $job );
+						break;
+					case 'zip_files':
+						$result = $this->process_job_zip_files( $job );
+						break;
+					case 'finalize':
+						$result = $this->process_job_finalize( $job );
+						break;
+					case 'upload_drive':
+						$result = $this->process_job_drive_upload( $job );
+						break;
+					case 'cleanup':
+						$result = $this->process_job_cleanup( $job );
+						break;
+					default:
+						$result = new WP_Error( 'zoecloud_job_stage_invalid', __( 'Backup job stage is invalid.', 'zoe-cloud' ) );
+						break;
+				}
+			} catch ( Throwable $exception ) {
+				$result = new WP_Error( 'zoecloud_job_exception', $exception->getMessage() );
+			}
+
+			if ( is_wp_error( $result ) ) {
+				$this->fail_job( $job_id, $result->get_error_message() );
+				break;
+			}
+
+			$steps++;
+		} while ( $steps < $max_steps && ( time() - $started_at ) < $time_budget );
+
+		$this->defer_scheduling = false;
+		$job                    = $this->get_job( $job_id );
+
+		if ( ! empty( $job ) && ! in_array( $job['status'], array( 'completed', 'failed' ), true ) ) {
+			$this->schedule_next_job_run( $job_id );
 		}
 
-		if ( is_wp_error( $result ) ) {
-			$this->fail_job( $job_id, $result->get_error_message() );
-		}
+		delete_transient( $lock_key );
 	}
 
 	/**
@@ -954,6 +986,10 @@ class ZoeCloud_Backup_Manager {
 	 * @return true|WP_Error
 	 */
 	private function schedule_next_job_run( $job_id ) {
+		if ( $this->defer_scheduling ) {
+			return true;
+		}
+
 		$scheduled = wp_schedule_single_event( time() + 1, 'zoecloud_run_backup_job', array( $job_id ) );
 
 		if ( ! $scheduled ) {

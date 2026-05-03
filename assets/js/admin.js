@@ -204,7 +204,14 @@
 		let keepPolling = true;
 
 		while ( keepPolling ) {
-			const job = await request( `jobs/${ encodeURIComponent( jobId ) }` );
+			let job = await request( `jobs/${ encodeURIComponent( jobId ) }` );
+
+			if ( [ 'queued', 'running' ].includes( job.status ) ) {
+				job = await request( `jobs/${ encodeURIComponent( jobId ) }/tick`, {
+					method: 'POST',
+				} );
+			}
+
 			renderJobs( [ job ] );
 
 			if ( 'completed' === job.status ) {
@@ -216,7 +223,7 @@
 				await refresh();
 				keepPolling = false;
 			} else {
-				await new Promise( ( resolve ) => setTimeout( resolve, 2000 ) );
+				await new Promise( ( resolve ) => setTimeout( resolve, 250 ) );
 			}
 		}
 	};

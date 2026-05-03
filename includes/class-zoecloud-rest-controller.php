@@ -109,6 +109,16 @@ class ZoeCloud_REST_Controller {
 
 		register_rest_route(
 			'zoecloud/v1',
+			'/jobs/(?P<id>[^/]+)/tick',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'run_job_tick' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
 			'/restore',
 			array(
 				array(
@@ -218,6 +228,24 @@ class ZoeCloud_REST_Controller {
 	 */
 	public function get_job( WP_REST_Request $request ) {
 		$job = $this->backup_manager->get_job( (string) $request['id'] );
+
+		if ( empty( $job ) ) {
+			return new WP_Error( 'zoecloud_job_missing', __( 'Job not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		}
+
+		return rest_ensure_response( $job );
+	}
+
+	/**
+	 * Run one job step and return the updated job.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function run_job_tick( WP_REST_Request $request ) {
+		$job_id = (string) $request['id'];
+		$this->backup_manager->run_backup_job( $job_id );
+		$job = $this->backup_manager->get_job( $job_id );
 
 		if ( empty( $job ) ) {
 			return new WP_Error( 'zoecloud_job_missing', __( 'Job not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
