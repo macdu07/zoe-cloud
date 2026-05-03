@@ -75,7 +75,7 @@ Para subir backups a R2 necesitas:
 * R2 Access Key ID.
 * R2 Secret Access Key.
 * Nombre del bucket.
-* Prefix opcional, por ejemplo `zoe-cloud`.
+* Prefix opcional. Dejalo vacio para guardar cada sitio directamente en la raiz del bucket.
 
 Pasos recomendados:
 
@@ -106,7 +106,7 @@ Para subir backups a AWS S3 necesitas:
 * S3 Secret Access Key.
 * Nombre del bucket.
 * Region del bucket, por ejemplo `us-east-1`.
-* Prefix opcional, por ejemplo `zoe-cloud`.
+* Prefix opcional. Dejalo vacio para guardar cada sitio directamente en la raiz del bucket.
 
 Endpoint usado por ZoeCloud:
 

@@ -101,7 +101,11 @@ class ZoeCloud_R2_Service {
 		$code = wp_remote_retrieve_response_code( $response );
 
 		if ( $code < 200 || $code >= 300 ) {
-			return new WP_Error( 'zoecloud_cloud_upload_failed', sprintf( __( '%s upload failed.', 'zoe-cloud' ), $config['label'] ), wp_remote_retrieve_body( $response ) );
+			return new WP_Error(
+				'zoecloud_cloud_upload_failed',
+				$this->format_upload_error( $config, $response ),
+				wp_remote_retrieve_body( $response )
+			);
 		}
 
 		return array(
@@ -132,7 +136,7 @@ class ZoeCloud_R2_Service {
 				's3_secret_access_key' => '',
 				's3_bucket'            => '',
 				's3_region'            => 'us-east-1',
-				's3_prefix'            => 'zoe-cloud',
+				's3_prefix'            => '',
 			)
 		);
 
@@ -327,6 +331,59 @@ class ZoeCloud_R2_Service {
 	 */
 	private function encode_key_path( $key ) {
 		return implode( '/', array_map( 'rawurlencode', explode( '/', ltrim( (string) $key, '/' ) ) ) );
+	}
+
+	/**
+	 * Build a useful upload error from an S3-compatible XML response.
+	 *
+	 * @param array $config   Provider config.
+	 * @param array $response HTTP response.
+	 * @return string
+	 */
+	private function format_upload_error( array $config, array $response ) {
+		$status          = wp_remote_retrieve_response_code( $response );
+		$body            = wp_remote_retrieve_body( $response );
+		$aws_code        = $this->extract_xml_value( $body, 'Code' );
+		$aws_message     = $this->extract_xml_value( $body, 'Message' );
+		$expected_region = wp_remote_retrieve_header( $response, 'x-amz-bucket-region' );
+		$parts           = array( sprintf( __( '%s upload failed.', 'zoe-cloud' ), $config['label'] ) );
+
+		if ( $status ) {
+			$parts[] = sprintf( __( 'HTTP %d.', 'zoe-cloud' ), $status );
+		}
+
+		if ( $aws_code ) {
+			$parts[] = $aws_code . '.';
+		}
+
+		if ( $aws_message ) {
+			$parts[] = $aws_message;
+		}
+
+		if ( $expected_region && $expected_region !== $config['region'] ) {
+			$parts[] = sprintf( __( 'Bucket region appears to be %1$s, but ZoeCloud is configured with %2$s.', 'zoe-cloud' ), $expected_region, $config['region'] );
+		}
+
+		return implode( ' ', array_filter( $parts ) );
+	}
+
+	/**
+	 * Extract a simple XML element value without requiring SimpleXML.
+	 *
+	 * @param string $xml XML body.
+	 * @param string $tag Element name.
+	 * @return string
+	 */
+	private function extract_xml_value( $xml, $tag ) {
+		if ( ! is_string( $xml ) || '' === $xml ) {
+			return '';
+		}
+
+		if ( ! preg_match( '/<' . preg_quote( $tag, '/' ) . '>(.*?)<\/' . preg_quote( $tag, '/' ) . '>/s', $xml, $matches ) ) {
+			return '';
+		}
+
+		return trim( html_entity_decode( wp_strip_all_tags( $matches[1] ), ENT_QUOTES, 'UTF-8' ) );
 	}
 
 	/**

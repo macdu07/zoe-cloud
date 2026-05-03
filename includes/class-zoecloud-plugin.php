@@ -60,7 +60,7 @@ class ZoeCloud_Plugin {
 			's3_secret_access_key' => '',
 			's3_bucket'            => '',
 			's3_region'            => 'us-east-1',
-			's3_prefix'            => 'zoe-cloud',
+			's3_prefix'            => '',
 			'retention_limit'     => 10,
 			'schedule'            => 'daily',
 			'auto_upload_drive'   => 1,

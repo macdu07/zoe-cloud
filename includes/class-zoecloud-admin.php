@@ -102,7 +102,7 @@ class ZoeCloud_Admin {
 			's3_secret_access_key' => '',
 			's3_bucket'            => sanitize_text_field( $settings['s3_bucket'] ?? ( $current['s3_bucket'] ?? '' ) ),
 			's3_region'            => $this->sanitize_s3_region( $settings['s3_region'] ?? ( $current['s3_region'] ?? 'us-east-1' ) ),
-			's3_prefix'            => $this->sanitize_storage_prefix( $settings['s3_prefix'] ?? ( $current['s3_prefix'] ?? 'zoe-cloud' ) ),
+			's3_prefix'            => $this->sanitize_storage_prefix( $settings['s3_prefix'] ?? ( $current['s3_prefix'] ?? '' ) ),
 			'retention_limit'      => max( 1, absint( $settings['retention_limit'] ?? ( $current['retention_limit'] ?? 10 ) ) ),
 			'schedule'             => sanitize_text_field( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) ),
 			'auto_upload_drive'    => 'backup' === $section ? ( ! empty( $settings['auto_upload_drive'] ) ? 1 : 0 ) : absint( $current['auto_upload_drive'] ?? 1 ),
@@ -243,7 +243,7 @@ class ZoeCloud_Admin {
 				's3_access_key_id'    => '',
 				's3_bucket'           => '',
 				's3_region'           => 'us-east-1',
-				's3_prefix'           => 'zoe-cloud',
+				's3_prefix'           => '',
 				'retention_limit'    => 10,
 				'schedule'           => 'daily',
 				'auto_upload_drive'  => 1,
@@ -422,7 +422,7 @@ class ZoeCloud_Admin {
 									<th scope="row"><label for="zoecloud_r2_prefix"><?php esc_html_e( 'R2 Prefix', 'zoe-cloud' ); ?></label></th>
 									<td>
 										<input type="text" id="zoecloud_r2_prefix" name="zoecloud_settings[r2_prefix]" class="regular-text" value="<?php echo esc_attr( $settings['r2_prefix'] ); ?>">
-										<p class="description"><?php esc_html_e( 'Optional folder prefix inside the bucket, for example zoe-cloud.', 'zoe-cloud' ); ?></p>
+										<p class="description"><?php esc_html_e( 'Optional folder prefix inside the bucket. Leave blank to store each site folder at the bucket root.', 'zoe-cloud' ); ?></p>
 									</td>
 								</tr>
 							</table>

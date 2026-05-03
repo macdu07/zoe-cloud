@@ -98,7 +98,7 @@ Required settings:
 - `S3 Secret Access Key`
 - `S3 Bucket`
 - `S3 Region`, for example `us-east-1`
-- `S3 Prefix` optional, defaults to `zoe-cloud`
+- `S3 Prefix` optional, blank by default. Leave it blank to store each site folder at the bucket root.
 
 Endpoint format:
 
