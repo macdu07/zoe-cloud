@@ -14,6 +14,8 @@
 		validateRestore: document.getElementById( 'zoecloud-validate-restore' ),
 		runRestore: document.getElementById( 'zoecloud-run-restore' ),
 		restoreFeedback: document.getElementById( 'zoecloud-restore-feedback' ),
+		tabs: document.querySelectorAll( '[data-zoecloud-tab]' ),
+		tabPanels: document.querySelectorAll( '[data-zoecloud-panel]' ),
 		jobStatusTimer: null,
 		keepFinalJobStatus: false,
 	};
@@ -203,6 +205,41 @@
 		state.feedback.textContent = message;
 		state.feedback.classList.toggle( 'is-error', isError );
 	};
+
+	const activateTab = ( target, updateHash = true ) => {
+		const tab = Array.from( state.tabs ).find( ( item ) => item.dataset.zoecloudTab === target );
+
+		if ( ! tab ) {
+			return;
+		}
+
+		state.tabs.forEach( ( item ) => item.classList.toggle( 'is-active', item === tab ) );
+		state.tabPanels.forEach( ( panel ) => {
+			panel.classList.toggle( 'is-active', panel.dataset.zoecloudPanel === target );
+		} );
+
+		if ( updateHash ) {
+			window.history.replaceState( null, '', `#${ target }` );
+		}
+	};
+
+	state.tabs.forEach( ( tab ) => {
+		tab.addEventListener( 'click', () => activateTab( tab.dataset.zoecloudTab ) );
+	} );
+
+	document.querySelectorAll( '.zoecloud-tab-panel form' ).forEach( ( form ) => {
+		form.addEventListener( 'submit', () => {
+			const referer = form.querySelector( 'input[name="_wp_http_referer"]' );
+
+			if ( referer ) {
+				referer.value = `${ window.location.pathname }${ window.location.search }${ window.location.hash }`;
+			}
+		} );
+	} );
+
+	if ( [ '#backups', '#storage' ].includes( window.location.hash ) ) {
+		activateTab( window.location.hash.slice( 1 ), false );
+	}
 
 	state.createButton?.addEventListener( 'click', async () => {
 		state.createButton.disabled = true;

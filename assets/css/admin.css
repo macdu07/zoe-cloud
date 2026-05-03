@@ -92,6 +92,49 @@
 	font-size: 18px;
 }
 
+.zoecloud-tabs {
+	align-items: center;
+	background: rgba(255, 255, 255, 0.78);
+	border: 1px solid rgba(220, 224, 231, 0.9);
+	border-radius: 8px;
+	box-shadow: 0 10px 24px rgba(4, 32, 74, 0.06);
+	display: inline-flex;
+	gap: 6px;
+	margin-bottom: 8px;
+	padding: 6px;
+}
+
+.zoecloud-tab {
+	background: transparent;
+	border: 0;
+	border-radius: 6px;
+	color: var(--zoe-muted);
+	cursor: pointer;
+	font-size: 14px;
+	font-weight: 800;
+	line-height: 1;
+	min-height: 38px;
+	padding: 0 18px;
+}
+
+.zoecloud-tab:hover {
+	color: var(--zoe-blue);
+}
+
+.zoecloud-tab.is-active {
+	background: var(--zoe-navy);
+	box-shadow: 0 8px 18px rgba(4, 32, 74, 0.18);
+	color: #fff;
+}
+
+.zoecloud-tab-panel {
+	display: none;
+}
+
+.zoecloud-tab-panel.is-active {
+	display: block;
+}
+
 .zoecloud-grid {
 	display: grid;
 	grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.1fr);
