@@ -124,25 +124,10 @@ ZoeCloud currently applies:
 
 Use R2 credentials with the narrowest bucket permissions possible.
 
-## Local Development
-
-This project is currently developed inside a DDEV WordPress environment.
-
-Useful validation commands:
-
-```bash
-ddev exec bash -lc 'find wp-content/plugins/zoe-cloud -name "*.php" -print0 | while IFS= read -r -d "" f; do php -l "$f" || exit 1; done'
-node --check assets/js/admin.js
-git diff --check
-```
-
-Cloudflare R2 uploads can be tested from local/DDEV as long as the web container has outbound internet access.
-
 ## Current Limitations
 
 - Cloud restore from R2 is not implemented yet; backups are restored from local records/files.
 - Manual upload of external ZIP files for restore is not implemented yet.
-- Google Drive OAuth is deferred until an OAuth broker is available.
 - Incremental backups are not implemented yet.
 
 ## Roadmap
@@ -154,4 +139,3 @@ Cloudflare R2 uploads can be tested from local/DDEV as long as the web container
 - Incremental backups.
 - SaaS dashboard.
 - Multisite support.
-
