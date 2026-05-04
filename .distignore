@@ -1,0 +1,10 @@
+.git
+.gitignore
+.distignore
+.DS_Store
+composer.json
+composer.lock
+phpcs.xml
+phpcs.xml.dist
+vendor
+node_modules

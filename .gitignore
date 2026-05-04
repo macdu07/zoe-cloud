@@ -6,7 +6,6 @@ dist/
 build/
 
 PROMPT.md
-readme.txt
 
 .claude/
 .gemini/

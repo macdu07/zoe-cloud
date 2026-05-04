@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Validates backup archives and restores files/database content.
+ */
 class ZoeCloud_Restore_Manager {
 	/**
 	 * Number of rows processed per search/replace batch.
@@ -16,6 +19,27 @@ class ZoeCloud_Restore_Manager {
 	 * @var int
 	 */
 	private $replace_batch_size = 250;
+
+	/**
+	 * Maximum ZIP entries accepted during restore validation.
+	 *
+	 * @var int
+	 */
+	private $max_zip_entries = 200000;
+
+	/**
+	 * Maximum total uncompressed bytes accepted during restore validation.
+	 *
+	 * @var int
+	 */
+	private $max_uncompressed_bytes = 10737418240;
+
+	/**
+	 * Maximum archive-wide compression ratio accepted during restore validation.
+	 *
+	 * @var int
+	 */
+	private $max_compression_ratio = 100;
 
 	/**
 	 * Validate a backup archive.
@@ -99,6 +123,7 @@ class ZoeCloud_Restore_Manager {
 	 * @param string $zip_path    Archive path.
 	 * @param string $search      Old URL.
 	 * @param string $replacement New URL.
+	 * @param bool   $confirmed   Whether the destructive restore was confirmed.
 	 * @return true|WP_Error
 	 */
 	public function restore_backup( $zip_path, $search = '', $replacement = '', $confirmed = false ) {
@@ -116,19 +141,24 @@ class ZoeCloud_Restore_Manager {
 		$temp_dir = trailingslashit( $uploads['basedir'] ) . 'zoecloud-restore-' . wp_generate_password( 8, false, false );
 		wp_mkdir_p( $temp_dir );
 
-		$zip = new ZipArchive();
+		$zip    = new ZipArchive();
 		$opened = $zip->open( $zip_path );
 
 		if ( true !== $opened ) {
 			return new WP_Error( 'zoecloud_restore_zip_invalid', __( 'Could not open the backup archive.', 'zoe-cloud' ) );
 		}
 
-		$zip->extractTo( $temp_dir );
+		if ( true !== $zip->extractTo( $temp_dir ) ) {
+			$zip->close();
+			$this->cleanup_directory( $temp_dir );
+			return new WP_Error( 'zoecloud_restore_extract_failed', __( 'Could not extract the backup archive.', 'zoe-cloud' ) );
+		}
+
 		$zip->close();
 
-		$preserved_backups = $this->get_existing_backup_records();
+		$preserved_backups   = $this->get_existing_backup_records();
 		$preserved_backups[] = $this->build_backup_record_from_archive( $zip_path, $validated['manifest'] );
-		$sql = file_get_contents( $temp_dir . '/database.sql' );
+		$sql                 = file_get_contents( $temp_dir . '/database.sql' );
 
 		$imported = $this->import_sql( $sql );
 
@@ -422,7 +452,18 @@ class ZoeCloud_Restore_Manager {
 	 * @return true|WP_Error
 	 */
 	private function validate_zip_entries( ZipArchive $zip ) {
-		for ( $index = 0; $index < $zip->numFiles; $index++ ) {
+		$max_entries           = (int) apply_filters( 'zoecloud_restore_max_zip_entries', $this->max_zip_entries );
+		$max_uncompressed      = (int) apply_filters( 'zoecloud_restore_max_uncompressed_bytes', $this->max_uncompressed_bytes );
+		$max_compression_ratio = (int) apply_filters( 'zoecloud_restore_max_compression_ratio', $this->max_compression_ratio );
+		$total_size            = 0;
+		$total_compressed      = 0;
+		$num_files             = $zip->numFiles; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
+
+		if ( $num_files > $max_entries ) {
+			return new WP_Error( 'zoecloud_restore_too_many_entries', __( 'Backup archive contains too many entries.', 'zoe-cloud' ) );
+		}
+
+		for ( $index = 0; $index < $num_files; $index++ ) {
 			$name = $zip->getNameIndex( $index );
 
 			if ( false === $name || '' === $name ) {
@@ -434,6 +475,23 @@ class ZoeCloud_Restore_Manager {
 			if ( 0 === strpos( $normalized, '/' ) || false !== strpos( $normalized, '../' ) || '..' === $normalized ) {
 				return new WP_Error( 'zoecloud_restore_unsafe_archive', __( 'Backup archive contains unsafe paths.', 'zoe-cloud' ), array( 'entry' => $name ) );
 			}
+
+			$stats = $zip->statIndex( $index );
+
+			if ( ! is_array( $stats ) ) {
+				return new WP_Error( 'zoecloud_restore_invalid_entry', __( 'Backup archive contains an invalid entry.', 'zoe-cloud' ), array( 'entry' => $name ) );
+			}
+
+			$total_size       += isset( $stats['size'] ) ? (int) $stats['size'] : 0;
+			$total_compressed += isset( $stats['comp_size'] ) ? max( 0, (int) $stats['comp_size'] ) : 0;
+
+			if ( $total_size > $max_uncompressed ) {
+				return new WP_Error( 'zoecloud_restore_too_large', __( 'Backup archive expands beyond the restore size limit.', 'zoe-cloud' ) );
+			}
+		}
+
+		if ( $total_compressed > 0 && $total_size / $total_compressed > $max_compression_ratio ) {
+			return new WP_Error( 'zoecloud_restore_suspicious_compression', __( 'Backup archive compression ratio is too high.', 'zoe-cloud' ) );
 		}
 
 		return true;
@@ -444,6 +502,7 @@ class ZoeCloud_Restore_Manager {
 	 *
 	 * @param string $search      Old URL.
 	 * @param string $replacement New URL.
+	 * @param array  $tables      Database tables to inspect. Empty means all tables.
 	 * @return true|WP_Error
 	 */
 	private function replace_urls_in_database( $search, $replacement, array $tables = array() ) {
@@ -466,7 +525,7 @@ class ZoeCloud_Restore_Manager {
 			do {
 				$table_name = $this->quote_identifier( $table );
 				$query      = $wpdb->prepare( "SELECT * FROM {$table_name} LIMIT %d OFFSET %d", $this->replace_batch_size, $offset ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				$rows       = $wpdb->get_results( $query, ARRAY_A );
+				$rows       = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 				foreach ( $rows as $row ) {
 					$updates = array();
@@ -496,8 +555,9 @@ class ZoeCloud_Restore_Manager {
 					}
 				}
 
-				$offset += $this->replace_batch_size;
-			} while ( count( $rows ) === $this->replace_batch_size );
+				$offset       += $this->replace_batch_size;
+					$row_count = count( $rows );
+			} while ( $row_count === $this->replace_batch_size );
 		}
 
 		return true;

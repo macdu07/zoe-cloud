@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Handles S3-compatible cloud uploads and deletes.
+ */
 class ZoeCloud_R2_Service {
 	/**
 	 * Option key.
@@ -44,12 +47,12 @@ class ZoeCloud_R2_Service {
 		$config   = $this->get_provider_config( $settings, $provider );
 
 		return array(
-			'provider'     => $provider,
-			'label'        => $config['label'],
-			'configured'   => $this->is_configured( $settings, $provider ),
-			'bucket'       => $config['bucket'],
-			'prefix'       => $config['prefix'],
-			'endpoint'     => $config['endpoint'],
+			'provider'   => $provider,
+			'label'      => $config['label'],
+			'configured' => $this->is_configured( $settings, $provider ),
+			'bucket'     => $config['bucket'],
+			'prefix'     => $config['prefix'],
+			'endpoint'   => $config['endpoint'],
 		);
 	}
 
@@ -66,6 +69,7 @@ class ZoeCloud_R2_Service {
 		$config   = $this->get_provider_config( $settings, $provider );
 
 		if ( ! $this->is_configured( $settings, $provider ) ) {
+			/* translators: %s: Cloud storage provider label. */
 			return new WP_Error( 'zoecloud_cloud_not_configured', sprintf( __( '%s is not configured.', 'zoe-cloud' ), $config['label'] ) );
 		}
 
@@ -140,10 +144,11 @@ class ZoeCloud_R2_Service {
 		}
 
 		if ( ! $this->is_provider_configured( $config ) ) {
+			/* translators: %s: Cloud storage provider label. */
 			return new WP_Error( 'zoecloud_cloud_delete_not_configured', sprintf( __( '%s is not configured.', 'zoe-cloud' ), $config['label'] ) );
 		}
 
-		$key      = ltrim( (string) $cloud['key'], '/' );
+		$key     = ltrim( (string) $cloud['key'], '/' );
 		$headers = $this->build_signed_headers( $config, 'DELETE', $key, '', true );
 		$url     = $this->build_upload_url( $config, $key );
 
@@ -182,7 +187,7 @@ class ZoeCloud_R2_Service {
 		$settings = wp_parse_args(
 			get_option( $this->option_name, array() ),
 			array(
-				'storage_provider'      => 'r2',
+				'storage_provider'     => 'r2',
 				'r2_account_id'        => '',
 				'r2_access_key_id'     => '',
 				'r2_secret_access_key' => '',
@@ -235,30 +240,30 @@ class ZoeCloud_R2_Service {
 			$bucket = sanitize_text_field( (string) $settings['s3_bucket'] );
 
 			return array(
-				'provider'     => 's3',
-				'label'        => __( 'AWS S3', 'zoe-cloud' ),
-				'access_key'   => (string) $settings['s3_access_key_id'],
-				'secret_key'   => (string) $settings['s3_secret_access_key'],
-				'bucket'       => $bucket,
-				'prefix'       => (string) $settings['s3_prefix'],
-				'region'       => $region,
-				'endpoint'     => $bucket ? 'https://' . $bucket . '.s3.' . $region . '.amazonaws.com' : '',
-				'path_style'   => false,
+				'provider'   => 's3',
+				'label'      => __( 'AWS S3', 'zoe-cloud' ),
+				'access_key' => (string) $settings['s3_access_key_id'],
+				'secret_key' => (string) $settings['s3_secret_access_key'],
+				'bucket'     => $bucket,
+				'prefix'     => (string) $settings['s3_prefix'],
+				'region'     => $region,
+				'endpoint'   => $bucket ? 'https://' . $bucket . '.s3.' . $region . '.amazonaws.com' : '',
+				'path_style' => false,
 			);
 		}
 
 		$account_id = preg_replace( '/[^a-zA-Z0-9]/', '', (string) $settings['r2_account_id'] );
 
 		return array(
-			'provider'     => 'r2',
-			'label'        => __( 'Cloudflare R2', 'zoe-cloud' ),
-			'access_key'   => (string) $settings['r2_access_key_id'],
-			'secret_key'   => (string) $settings['r2_secret_access_key'],
-			'bucket'       => (string) $settings['r2_bucket'],
-			'prefix'       => (string) $settings['r2_prefix'],
-			'region'       => 'auto',
-			'endpoint'     => $account_id ? 'https://' . $account_id . '.r2.cloudflarestorage.com' : '',
-			'path_style'   => true,
+			'provider'   => 'r2',
+			'label'      => __( 'Cloudflare R2', 'zoe-cloud' ),
+			'access_key' => (string) $settings['r2_access_key_id'],
+			'secret_key' => (string) $settings['r2_secret_access_key'],
+			'bucket'     => (string) $settings['r2_bucket'],
+			'prefix'     => (string) $settings['r2_prefix'],
+			'region'     => 'auto',
+			'endpoint'   => $account_id ? 'https://' . $account_id . '.r2.cloudflarestorage.com' : '',
+			'path_style' => true,
 		);
 	}
 
@@ -425,8 +430,8 @@ class ZoeCloud_R2_Service {
 	/**
 	 * Build a useful cloud error from an S3-compatible XML response.
 	 *
-	 * @param array $config   Provider config.
-	 * @param array $response HTTP response.
+	 * @param array  $config   Provider config.
+	 * @param array  $response HTTP response.
 	 * @param string $action  Failed action.
 	 * @return string
 	 */
@@ -439,6 +444,7 @@ class ZoeCloud_R2_Service {
 		$parts           = array( trim( $config['label'] . ' ' . $action ) );
 
 		if ( $status ) {
+			/* translators: %d: HTTP status code. */
 			$parts[] = sprintf( __( 'HTTP %d.', 'zoe-cloud' ), $status );
 		}
 
@@ -451,6 +457,7 @@ class ZoeCloud_R2_Service {
 		}
 
 		if ( $expected_region && $expected_region !== $config['region'] ) {
+			/* translators: 1: Expected bucket region. 2: Configured bucket region. */
 			$parts[] = sprintf( __( 'Bucket region appears to be %1$s, but ZoeCloud is configured with %2$s.', 'zoe-cloud' ), $expected_region, $config['region'] );
 		}
 

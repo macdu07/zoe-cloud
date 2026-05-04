@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Creates, stores, streams, and deletes backup archives.
+ */
 class ZoeCloud_Backup_Manager {
 	/**
 	 * Cloud service.
@@ -61,7 +64,7 @@ class ZoeCloud_Backup_Manager {
 	 * @return array|WP_Error
 	 */
 	public function create_backup( array $args = array() ) {
-		$job_id = isset( $args['job_id'] ) ? sanitize_key( $args['job_id'] ) : '';
+		$job_id    = isset( $args['job_id'] ) ? sanitize_key( $args['job_id'] ) : '';
 		$preflight = $this->get_preflight_status();
 
 		if ( ! $preflight['ready'] ) {
@@ -96,18 +99,18 @@ class ZoeCloud_Backup_Manager {
 		wp_mkdir_p( $working_dir );
 
 		$manifest = array(
-			'plugin_version' => ZOECLOUD_VERSION,
-			'generated_at'   => gmdate( 'c' ),
-			'domain'         => (string) $domain,
-			'home_url'       => home_url(),
-			'site_url'       => site_url(),
-			'include_core'   => (bool) $args['include_core'],
-			'wordpress'      => get_bloginfo( 'version' ),
-			'exclusions'     => $settings['excluded_paths'],
-			'files_count'    => 0,
-			'files_size'     => 0,
-			'database_tables' => 0,
-			'database_rows'  => 0,
+			'plugin_version'       => ZOECLOUD_VERSION,
+			'generated_at'         => gmdate( 'c' ),
+			'domain'               => (string) $domain,
+			'home_url'             => home_url(),
+			'site_url'             => site_url(),
+			'include_core'         => (bool) $args['include_core'],
+			'wordpress'            => get_bloginfo( 'version' ),
+			'exclusions'           => $settings['excluded_paths'],
+			'files_count'          => 0,
+			'files_size'           => 0,
+			'database_tables'      => 0,
+			'database_rows'        => 0,
 			'database_table_names' => array(),
 		);
 
@@ -125,8 +128,8 @@ class ZoeCloud_Backup_Manager {
 			$this->update_job( $job_id, 'running', 35, __( 'Database exported.', 'zoe-cloud' ) );
 		}
 
-		$manifest['database_tables'] = $database_result['tables'];
-		$manifest['database_rows']   = $database_result['rows'];
+		$manifest['database_tables']      = $database_result['tables'];
+		$manifest['database_rows']        = $database_result['rows'];
 		$manifest['database_table_names'] = $database_result['table_names'];
 
 		file_put_contents( $working_dir . '/manifest.json', wp_json_encode( $manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
@@ -150,7 +153,7 @@ class ZoeCloud_Backup_Manager {
 		$file_stats     = $this->add_path_to_zip( $zip, WP_CONTENT_DIR, 'files/wp-content', $excluded_roots );
 
 		if ( ! empty( $args['include_core'] ) ) {
-			$core_stats = $this->add_core_to_zip( $zip, array_merge( $excluded_roots, array( wp_normalize_path( WP_CONTENT_DIR ) ) ) );
+			$core_stats           = $this->add_core_to_zip( $zip, array_merge( $excluded_roots, array( wp_normalize_path( WP_CONTENT_DIR ) ) ) );
 			$file_stats['count'] += $core_stats['count'];
 			$file_stats['size']  += $core_stats['size'];
 		}
@@ -244,7 +247,7 @@ class ZoeCloud_Backup_Manager {
 			'result'     => null,
 		);
 
-		$jobs              = $this->list_jobs();
+		$jobs               = $this->list_jobs();
 		$jobs[ $job['id'] ] = $job;
 		$this->save_jobs( $jobs );
 
@@ -263,7 +266,9 @@ class ZoeCloud_Backup_Manager {
 	/**
 	 * Run a queued backup job.
 	 *
-	 * @param string $job_id Job ID.
+	 * @param string $job_id      Job ID.
+	 * @param int    $max_steps   Maximum stage steps to run in this request.
+	 * @param int    $time_budget Maximum runtime budget in seconds.
 	 * @return void
 	 */
 	public function run_backup_job( $job_id, $max_steps = 25, $time_budget = 20 ) {
@@ -323,7 +328,7 @@ class ZoeCloud_Backup_Manager {
 				break;
 			}
 
-			$steps++;
+			++$steps;
 		} while ( $steps < $max_steps && ( time() - $started_at ) < $time_budget );
 
 		$this->defer_scheduling = false;
@@ -378,7 +383,13 @@ class ZoeCloud_Backup_Manager {
 			return new WP_Error( 'zoecloud_preflight_failed', __( 'Server requirements are not met for backups.', 'zoe-cloud' ), $preflight );
 		}
 
-		$args        = wp_parse_args( $job['args'], array( 'include_core' => false, 'upload_drive' => true ) );
+		$args        = wp_parse_args(
+			$job['args'],
+			array(
+				'include_core' => false,
+				'upload_drive' => true,
+			)
+		);
 		$settings    = $this->get_settings();
 		$domain      = wp_parse_url( home_url(), PHP_URL_HOST );
 		$timestamp   = gmdate( 'Y-m-d-H-i' );
@@ -406,39 +417,39 @@ class ZoeCloud_Backup_Manager {
 		}
 
 		$manifest = array(
-			'plugin_version'        => ZOECLOUD_VERSION,
-			'generated_at'          => gmdate( 'c' ),
-			'domain'                => (string) $domain,
-			'home_url'              => home_url(),
-			'site_url'              => site_url(),
-			'include_core'          => (bool) $args['include_core'],
-			'wordpress'             => get_bloginfo( 'version' ),
-			'exclusions'            => $settings['excluded_paths'],
-			'files_count'           => 0,
-			'files_size'            => 0,
-			'database_tables'       => count( $tables ),
-			'database_rows'         => 0,
-			'database_table_names'  => array_values( $tables ),
+			'plugin_version'       => ZOECLOUD_VERSION,
+			'generated_at'         => gmdate( 'c' ),
+			'domain'               => (string) $domain,
+			'home_url'             => home_url(),
+			'site_url'             => site_url(),
+			'include_core'         => (bool) $args['include_core'],
+			'wordpress'            => get_bloginfo( 'version' ),
+			'exclusions'           => $settings['excluded_paths'],
+			'files_count'          => 0,
+			'files_size'           => 0,
+			'database_tables'      => count( $tables ),
+			'database_rows'        => 0,
+			'database_table_names' => array_values( $tables ),
 		);
 
 		$state = array(
-			'storage_dir'       => $storage_dir,
-			'working_dir'       => $working_dir,
-			'database_file'     => $database_file,
-			'manifest_file'     => trailingslashit( $working_dir ) . 'manifest.json',
-			'filelist_file'     => trailingslashit( $working_dir ) . 'files.jsonl',
-			'archive_path'      => trailingslashit( $storage_dir ) . $filename,
-			'filename'          => $filename,
-			'tables'            => array_values( $tables ),
-			'table_index'       => 0,
-			'table_offset'      => 0,
-			'table_started'     => false,
-			'database_rows'     => 0,
-			'files_count'       => 0,
-			'files_size'        => 0,
-			'zip_index'         => 0,
-			'manifest'          => $manifest,
-			'excluded_paths'    => $settings['excluded_paths'],
+			'storage_dir'    => $storage_dir,
+			'working_dir'    => $working_dir,
+			'database_file'  => $database_file,
+			'manifest_file'  => trailingslashit( $working_dir ) . 'manifest.json',
+			'filelist_file'  => trailingslashit( $working_dir ) . 'files.jsonl',
+			'archive_path'   => trailingslashit( $storage_dir ) . $filename,
+			'filename'       => $filename,
+			'tables'         => array_values( $tables ),
+			'table_index'    => 0,
+			'table_offset'   => 0,
+			'table_started'  => false,
+			'database_rows'  => 0,
+			'files_count'    => 0,
+			'files_size'     => 0,
+			'zip_index'      => 0,
+			'manifest'       => $manifest,
+			'excluded_paths' => $settings['excluded_paths'],
 		);
 
 		$this->write_manifest_file( $state );
@@ -469,9 +480,10 @@ class ZoeCloud_Backup_Manager {
 			return new WP_Error( 'zoecloud_db_dump_failed', __( 'Could not write the database dump.', 'zoe-cloud' ) );
 		}
 
-		$batches = 0;
+		$batches     = 0;
+		$table_count = count( $tables );
 
-		while ( $batches < $this->db_batches_per_run && $state['table_index'] < count( $tables ) ) {
+		while ( $batches < $this->db_batches_per_run && $state['table_index'] < $table_count ) {
 			$table      = $tables[ $state['table_index'] ];
 			$table_name = $this->quote_identifier( $table );
 
@@ -490,19 +502,19 @@ class ZoeCloud_Backup_Manager {
 			}
 
 			$query = $wpdb->prepare( "SELECT * FROM {$table_name} LIMIT %d OFFSET %d", $this->db_batch_size, $state['table_offset'] ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			$rows  = $wpdb->get_results( $query, ARRAY_A );
+			$rows  = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 			foreach ( $rows as $row ) {
 				$this->write_insert_statement( $handle, $table_name, $row );
-				$state['database_rows']++;
+				++$state['database_rows'];
 			}
 
 			$state['table_offset'] += $this->db_batch_size;
-			$batches++;
+			++$batches;
 
 			if ( count( $rows ) < $this->db_batch_size ) {
 				fwrite( $handle, "\n" );
-				$state['table_index']++;
+				++$state['table_index'];
 				$state['table_offset']  = 0;
 				$state['table_started'] = false;
 			}
@@ -510,14 +522,15 @@ class ZoeCloud_Backup_Manager {
 
 		fclose( $handle );
 
-		if ( $state['table_index'] >= count( $tables ) ) {
+		if ( $state['table_index'] >= $table_count ) {
 			file_put_contents( $state['database_file'], "SET foreign_key_checks = 1;\n", FILE_APPEND );
 			$state['manifest']['database_rows'] = $state['database_rows'];
 			$this->write_manifest_file( $state );
 			$this->advance_job( $job['id'], 'scan_files', 40, __( 'Database exported. Scanning files.', 'zoe-cloud' ), $state );
 		} else {
-			$progress = 10 + (int) floor( ( $state['table_index'] / max( 1, count( $tables ) ) ) * 30 );
-			$this->advance_job( $job['id'], 'export_database', $progress, sprintf( __( 'Exporting database table %1$d of %2$d.', 'zoe-cloud' ), $state['table_index'] + 1, count( $tables ) ), $state );
+			$progress = 10 + (int) floor( ( $state['table_index'] / max( 1, $table_count ) ) * 30 );
+			/* translators: 1: Current database table number. 2: Total database table count. */
+			$this->advance_job( $job['id'], 'export_database', $progress, sprintf( __( 'Exporting database table %1$d of %2$d.', 'zoe-cloud' ), $state['table_index'] + 1, $table_count ), $state );
 		}
 
 		return $this->schedule_next_job_run( $job['id'] );
@@ -542,15 +555,15 @@ class ZoeCloud_Backup_Manager {
 		$stats = $this->write_path_filelist( $handle, WP_CONTENT_DIR, 'files/wp-content', $excluded_roots );
 
 		if ( ! empty( $args['include_core'] ) ) {
-			$core_stats = $this->write_core_filelist( $handle, array_merge( $excluded_roots, array( wp_normalize_path( WP_CONTENT_DIR ) ) ) );
+			$core_stats      = $this->write_core_filelist( $handle, array_merge( $excluded_roots, array( wp_normalize_path( WP_CONTENT_DIR ) ) ) );
 			$stats['count'] += $core_stats['count'];
 			$stats['size']  += $core_stats['size'];
 		}
 
 		fclose( $handle );
 
-		$state['files_count'] = $stats['count'];
-		$state['files_size']  = $stats['size'];
+		$state['files_count']             = $stats['count'];
+		$state['files_size']              = $stats['size'];
 		$state['manifest']['files_count'] = $stats['count'];
 		$state['manifest']['files_size']  = $stats['size'];
 		$this->write_manifest_file( $state );
@@ -583,10 +596,10 @@ class ZoeCloud_Backup_Manager {
 			return new WP_Error( 'zoecloud_zip_failed', __( 'Could not open the backup archive.', 'zoe-cloud' ) );
 		}
 
-		$file       = new SplFileObject( $state['filelist_file'], 'rb' );
-		$processed  = 0;
-		$zip_index  = absint( $state['zip_index'] );
-		$total      = max( 1, absint( $state['files_count'] ) );
+		$file      = new SplFileObject( $state['filelist_file'], 'rb' );
+		$processed = 0;
+		$zip_index = absint( $state['zip_index'] );
+		$total     = max( 1, absint( $state['files_count'] ) );
 
 		$file->seek( $zip_index );
 
@@ -595,7 +608,7 @@ class ZoeCloud_Backup_Manager {
 			$file->next();
 
 			if ( '' === $line ) {
-				$zip_index++;
+				++$zip_index;
 				continue;
 			}
 
@@ -605,8 +618,8 @@ class ZoeCloud_Backup_Manager {
 				$zip->addFile( $entry['path'], $entry['archive'] );
 			}
 
-			$processed++;
-			$zip_index++;
+			++$processed;
+			++$zip_index;
 		}
 
 		$zip->close();
@@ -616,6 +629,7 @@ class ZoeCloud_Backup_Manager {
 			$this->advance_job( $job['id'], 'finalize', 85, __( 'Archive files added. Finalizing backup.', 'zoe-cloud' ), $state );
 		} else {
 			$progress = 50 + (int) floor( ( $zip_index / $total ) * 35 );
+			/* translators: 1: Number of files added to archive. 2: Total file count. */
 			$this->advance_job( $job['id'], 'zip_files', $progress, sprintf( __( 'Added %1$d of %2$d files to archive.', 'zoe-cloud' ), $zip_index, $state['files_count'] ), $state );
 		}
 
@@ -750,13 +764,13 @@ class ZoeCloud_Backup_Manager {
 	public function get_preflight_status() {
 		$storage_dir = $this->get_storage_dir();
 		$checks      = array(
-			'ziparchive'       => class_exists( 'ZipArchive' ),
-			'uploads_writable' => wp_is_writable( $storage_dir ),
-			'can_create_files' => $this->can_create_storage_file( $storage_dir ),
-			'disk_free_bytes'  => function_exists( 'disk_free_space' ) ? (int) disk_free_space( $storage_dir ) : null,
-			'memory_limit'     => ini_get( 'memory_limit' ),
+			'ziparchive'         => class_exists( 'ZipArchive' ),
+			'uploads_writable'   => wp_is_writable( $storage_dir ),
+			'can_create_files'   => $this->can_create_storage_file( $storage_dir ),
+			'disk_free_bytes'    => function_exists( 'disk_free_space' ) ? (int) disk_free_space( $storage_dir ) : null,
+			'memory_limit'       => ini_get( 'memory_limit' ),
 			'max_execution_time' => ini_get( 'max_execution_time' ),
-			'wp_cron_disabled' => defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON,
+			'wp_cron_disabled'   => defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON,
 		);
 
 		$checks['ready'] = ! empty( $checks['ziparchive'] ) && ! empty( $checks['uploads_writable'] ) && ! empty( $checks['can_create_files'] );
@@ -863,15 +877,16 @@ class ZoeCloud_Backup_Manager {
 
 			do {
 				$query = $wpdb->prepare( "SELECT * FROM {$table_name} LIMIT %d OFFSET %d", $this->db_batch_size, $offset ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				$rows  = $wpdb->get_results( $query, ARRAY_A );
+				$rows  = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 				foreach ( $rows as $row ) {
 					$this->write_insert_statement( $handle, $table_name, $row );
-					$total_rows++;
+					++$total_rows;
 				}
 
-				$offset += $this->db_batch_size;
-			} while ( count( $rows ) === $this->db_batch_size );
+				$offset   += $this->db_batch_size;
+				$row_count = count( $rows );
+			} while ( $row_count === $this->db_batch_size );
 
 			fwrite( $handle, "\n" );
 		}
@@ -1036,8 +1051,8 @@ class ZoeCloud_Backup_Manager {
 				continue;
 			}
 
-			$updated_at       = ! empty( $job['updated_at'] ) ? strtotime( $job['updated_at'] . ' UTC' ) : 0;
-			$working_dir      = $job['state']['working_dir'] ?? '';
+			$updated_at        = ! empty( $job['updated_at'] ) ? strtotime( $job['updated_at'] . ' UTC' ) : 0;
+			$working_dir       = $job['state']['working_dir'] ?? '';
 			$missing_workspace = ! empty( $working_dir ) && ! is_dir( $working_dir );
 
 			if ( ! $missing_workspace && $updated_at && $updated_at > $threshold ) {
@@ -1157,13 +1172,13 @@ class ZoeCloud_Backup_Manager {
 		return strtr(
 			(string) $value,
 			array(
-				"\\" => "\\\\",
-				"\0" => "\\0",
-				"\n" => "\\n",
-				"\r" => "\\r",
-				"'"  => "\\'",
-				'"'  => '\\"',
-				"\x1a" => "\\Z",
+				'\\'   => '\\\\',
+				"\0"   => "\\0",
+				"\n"   => "\\n",
+				"\r"   => "\\r",
+				"'"    => "\\'",
+				'"'    => '\\"',
+				"\x1a" => '\\Z',
 			)
 		);
 	}
@@ -1253,7 +1268,7 @@ class ZoeCloud_Backup_Manager {
 			}
 
 			$zip->addFile( $item_path, $archive_path );
-			$stats['count']++;
+			++$stats['count'];
 			$stats['size'] += $item->getSize();
 		}
 
@@ -1287,14 +1302,14 @@ class ZoeCloud_Backup_Manager {
 			}
 
 			if ( is_dir( $source_path ) ) {
-				$path_stats = $this->add_path_to_zip( $zip, $source_path, 'files/' . $item, $excluded_roots );
+				$path_stats      = $this->add_path_to_zip( $zip, $source_path, 'files/' . $item, $excluded_roots );
 				$stats['count'] += $path_stats['count'];
 				$stats['size']  += $path_stats['size'];
 				continue;
 			}
 
 			$zip->addFile( $source_path, 'files/' . $item );
-			$stats['count']++;
+			++$stats['count'];
 			$stats['size'] += filesize( $source_path );
 		}
 
@@ -1345,7 +1360,7 @@ class ZoeCloud_Backup_Manager {
 			$archive_path = trim( $archive_root, '/' ) . '/' . $relative;
 
 			$this->write_filelist_entry( $handle, $item_path, $archive_path );
-			$stats['count']++;
+			++$stats['count'];
 			$stats['size'] += $item->getSize();
 		}
 
@@ -1378,7 +1393,7 @@ class ZoeCloud_Backup_Manager {
 			}
 
 			if ( is_dir( $source_path ) ) {
-				$path_stats = $this->write_path_filelist( $handle, $source_path, 'files/' . $item, $excluded_roots );
+				$path_stats      = $this->write_path_filelist( $handle, $source_path, 'files/' . $item, $excluded_roots );
 				$stats['count'] += $path_stats['count'];
 				$stats['size']  += $path_stats['size'];
 				continue;
@@ -1386,7 +1401,7 @@ class ZoeCloud_Backup_Manager {
 
 			if ( is_readable( $source_path ) && ! is_link( $source_path ) ) {
 				$this->write_filelist_entry( $handle, $source_path, 'files/' . $item );
-				$stats['count']++;
+				++$stats['count'];
 				$stats['size'] += filesize( $source_path );
 			}
 		}

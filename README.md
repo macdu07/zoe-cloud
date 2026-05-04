@@ -150,9 +150,19 @@ ZoeCloud currently applies:
 - REST nonce validation.
 - Encrypted storage for cloud secrets.
 - ZIP path traversal validation during restore.
+- Uploaded ZIP type, structure, entry count, size, and compression-ratio validation.
 - Basic direct-access protection for the local backup directory.
 
 Use cloud credentials with the narrowest bucket permissions possible.
+
+## Development Checks
+
+```bash
+composer install
+composer lint:php
+```
+
+`composer lint:php` runs WordPress Coding Standards and PHP compatibility checks without warnings. Run `vendor/bin/phpcs` directly when you want the full warning report for filesystem and database operations used by backup/restore internals.
 
 ## Current Limitations
 

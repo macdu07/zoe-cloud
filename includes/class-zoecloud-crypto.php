@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Encrypts and decrypts sensitive option values.
+ */
 class ZoeCloud_Crypto {
 	/**
 	 * Encrypt a string for storage.

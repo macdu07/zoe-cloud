@@ -136,14 +136,6 @@
 			return backup.cloud_error;
 		}
 
-		if ( backup.drive && backup.drive.file_id ) {
-			return 'Uploaded to Drive';
-		}
-
-		if ( backup.drive_error ) {
-			return backup.drive_error;
-		}
-
 		return 'Pending';
 	};
 

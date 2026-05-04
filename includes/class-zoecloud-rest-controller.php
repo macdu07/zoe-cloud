@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Registers and handles ZoeCloud REST endpoints.
+ */
 class ZoeCloud_REST_Controller {
 	/**
 	 * Backup manager.
@@ -381,7 +384,8 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function upload_restore_file() {
-		// phpcs:disable WordPress.Security.ValidatedSanitizedInput
+		// REST nonce verification is handled by WordPress through the X-WP-Nonce header.
+		// phpcs:disable WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Missing
 		if ( empty( $_FILES['zip_file'] ) || ! is_array( $_FILES['zip_file'] ) ) {
 			return new WP_Error( 'zoecloud_upload_missing', __( 'No file uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
 		}
@@ -407,12 +411,31 @@ class ZoeCloud_REST_Controller {
 			return new WP_Error( 'zoecloud_upload_invalid_type', __( 'Only ZIP archives can be uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
 		}
 
+		$filetype = wp_check_filetype_and_ext(
+			(string) $file['tmp_name'],
+			$original_name,
+			array(
+				'zip' => 'application/zip',
+			)
+		);
+
+		if ( 'zip' !== ( $filetype['ext'] ?? '' ) ) {
+			return new WP_Error( 'zoecloud_upload_invalid_type', __( 'Only valid ZIP archives can be uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
 		$temp_dir = $this->get_temp_upload_dir();
 		$key      = wp_generate_password( 32, false, false );
 		$dest     = $temp_dir . '/zoecloud-upload-' . $key . '.zip';
 
 		if ( ! move_uploaded_file( (string) $file['tmp_name'], $dest ) ) {
 			return new WP_Error( 'zoecloud_upload_move_failed', __( 'Could not save the uploaded file.', 'zoe-cloud' ), array( 'status' => 500 ) );
+		}
+
+		$validated = $this->restore_manager->validate_backup( $dest );
+
+		if ( is_wp_error( $validated ) ) {
+			wp_delete_file( $dest );
+			return $validated;
 		}
 
 		return rest_ensure_response(
@@ -436,7 +459,7 @@ class ZoeCloud_REST_Controller {
 			$filename = sanitize_file_name( (string) $request->get_param( 'zoecloud_download' ) );
 		}
 
-		$path     = $this->backup_manager->get_backup_path( $filename );
+		$path = $this->backup_manager->get_backup_path( $filename );
 
 		if ( ! file_exists( $path ) ) {
 			return new WP_Error( 'zoecloud_backup_missing', __( 'Backup file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );

@@ -26,13 +26,17 @@ define( 'ZOECLOUD_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-crypto.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-r2-service.php';
-require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-drive-service.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-backup-manager.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-restore-manager.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-rest-controller.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-admin.php';
 require_once ZOECLOUD_PLUGIN_DIR . 'includes/class-zoecloud-plugin.php';
 
+/**
+ * Return the ZoeCloud plugin instance.
+ *
+ * @return ZoeCloud_Plugin
+ */
 function zoecloud() {
 	static $plugin = null;
 

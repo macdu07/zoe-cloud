@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<ruleset name="ZoeCloud">
+	<description>WordPress Coding Standards checks for ZoeCloud.</description>
+
+	<file>.</file>
+
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+
+	<arg name="basepath" value="."/>
+	<arg name="extensions" value="php"/>
+	<arg name="parallel" value="8"/>
+
+	<config name="testVersion" value="7.4-"/>
+
+	<rule ref="WordPress"/>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress.WP.AlternativeFunctions">
+		<exclude-pattern>includes/class-zoecloud-backup-manager.php</exclude-pattern>
+		<exclude-pattern>includes/class-zoecloud-restore-manager.php</exclude-pattern>
+		<exclude-pattern>includes/class-zoecloud-rest-controller.php</exclude-pattern>
+	</rule>
+</ruleset>

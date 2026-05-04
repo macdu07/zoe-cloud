@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Wires plugin services and lifecycle hooks.
+ */
 class ZoeCloud_Plugin {
 	/**
 	 * Backup manager.
@@ -23,12 +26,12 @@ class ZoeCloud_Plugin {
 	 * @return void
 	 */
 	public function boot() {
-		$crypto          = new ZoeCloud_Crypto();
-		$r2_service      = new ZoeCloud_R2_Service( $crypto );
+		$crypto               = new ZoeCloud_Crypto();
+		$r2_service           = new ZoeCloud_R2_Service( $crypto );
 		$this->backup_manager = new ZoeCloud_Backup_Manager( $r2_service );
-		$restore_manager = new ZoeCloud_Restore_Manager();
-		$rest_controller = new ZoeCloud_REST_Controller( $this->backup_manager, $restore_manager, $r2_service );
-		$admin           = new ZoeCloud_Admin( $crypto, $r2_service );
+		$restore_manager      = new ZoeCloud_Restore_Manager();
+		$rest_controller      = new ZoeCloud_REST_Controller( $this->backup_manager, $restore_manager, $r2_service );
+		$admin                = new ZoeCloud_Admin( $crypto, $r2_service );
 
 		add_action( 'rest_api_init', array( $rest_controller, 'register_routes' ) );
 		add_action( 'zoecloud_run_scheduled_backup', array( $this->backup_manager, 'run_scheduled_backup' ) );
@@ -62,11 +65,7 @@ class ZoeCloud_Plugin {
 	 */
 	public static function activate() {
 		$defaults = array(
-			'drive_client_id'     => '',
-			'drive_client_secret' => '',
-			'drive_refresh_token' => '',
-			'drive_project_name'  => get_bloginfo( 'name' ),
-			'storage_provider'    => 'r2',
+			'storage_provider'     => 'r2',
 			'r2_account_id'        => '',
 			'r2_access_key_id'     => '',
 			'r2_secret_access_key' => '',
@@ -77,12 +76,12 @@ class ZoeCloud_Plugin {
 			's3_bucket'            => '',
 			's3_region'            => 'us-east-1',
 			's3_prefix'            => '',
-			'retention_limit'     => 10,
-			'schedule'            => 'daily',
-			'schedule_time'       => '02:00',
-			'schedule_weekday'    => 'monday',
-			'auto_upload_drive'   => 1,
-			'excluded_paths'      => array(),
+			'retention_limit'      => 10,
+			'schedule'             => 'daily',
+			'schedule_time'        => '02:00',
+			'schedule_weekday'     => 'monday',
+			'auto_upload_drive'    => 1,
+			'excluded_paths'       => array(),
 		);
 
 		if ( ! get_option( 'zoecloud_settings' ) ) {
@@ -165,10 +164,10 @@ class ZoeCloud_Plugin {
 				'saturday'  => 6,
 			);
 
-			$target_day = $weekdays[ $weekday ] ?? $weekdays['monday'];
+			$target_day  = $weekdays[ $weekday ] ?? $weekdays['monday'];
 			$current_day = (int) $now->format( 'w' );
-			$days_ahead = ( $target_day - $current_day + 7 ) % 7;
-			$next = $now->setTime( $hour, $minute, 0 )->modify( '+' . $days_ahead . ' days' );
+			$days_ahead  = ( $target_day - $current_day + 7 ) % 7;
+			$next        = $now->setTime( $hour, $minute, 0 )->modify( '+' . $days_ahead . ' days' );
 
 			if ( $next <= $now ) {
 				$next = $next->modify( '+7 days' );

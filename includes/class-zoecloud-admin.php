@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Registers and renders the ZoeCloud admin interface.
+ */
 class ZoeCloud_Admin {
 	/**
 	 * Crypto service.
@@ -83,23 +86,19 @@ class ZoeCloud_Admin {
 	 * @return array
 	 */
 	public function sanitize_settings( $settings ) {
-		$settings = is_array( $settings ) ? $settings : array();
-		$current = get_option( 'zoecloud_settings', array() );
-		$section = sanitize_key( $settings['settings_section'] ?? 'backup' );
-		$provider = sanitize_key( $settings['storage_provider'] ?? ( $current['storage_provider'] ?? 'r2' ) );
-		$provider = in_array( $provider, array( 'r2', 's3' ), true ) ? $provider : 'r2';
-		$schedule = sanitize_key( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) );
-		$schedule = in_array( $schedule, array( 'hourly', 'twicedaily', 'daily', 'weekly' ), true ) ? $schedule : 'daily';
-		$schedule_time = sanitize_text_field( $settings['schedule_time'] ?? ( $current['schedule_time'] ?? '02:00' ) );
-		$schedule_time = preg_match( '/^([01]\d|2[0-3]):[0-5]\d$/', $schedule_time ) ? $schedule_time : '02:00';
+		$settings         = is_array( $settings ) ? $settings : array();
+		$current          = get_option( 'zoecloud_settings', array() );
+		$section          = sanitize_key( $settings['settings_section'] ?? 'backup' );
+		$provider         = sanitize_key( $settings['storage_provider'] ?? ( $current['storage_provider'] ?? 'r2' ) );
+		$provider         = in_array( $provider, array( 'r2', 's3' ), true ) ? $provider : 'r2';
+		$schedule         = sanitize_key( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) );
+		$schedule         = in_array( $schedule, array( 'hourly', 'twicedaily', 'daily', 'weekly' ), true ) ? $schedule : 'daily';
+		$schedule_time    = sanitize_text_field( $settings['schedule_time'] ?? ( $current['schedule_time'] ?? '02:00' ) );
+		$schedule_time    = preg_match( '/^([01]\d|2[0-3]):[0-5]\d$/', $schedule_time ) ? $schedule_time : '02:00';
 		$schedule_weekday = sanitize_key( $settings['schedule_weekday'] ?? ( $current['schedule_weekday'] ?? 'monday' ) );
 		$schedule_weekday = in_array( $schedule_weekday, array( 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday' ), true ) ? $schedule_weekday : 'monday';
-		$clean   = array(
-			'drive_client_id'     => sanitize_text_field( $settings['drive_client_id'] ?? ( $current['drive_client_id'] ?? '' ) ),
-			'drive_client_secret' => '',
-			'drive_refresh_token' => '',
-			'drive_project_name'  => sanitize_text_field( $settings['drive_project_name'] ?? ( $current['drive_project_name'] ?? get_bloginfo( 'name' ) ) ),
-			'storage_provider'    => $provider,
+		$clean            = array(
+			'storage_provider'     => $provider,
 			'r2_account_id'        => sanitize_text_field( $settings['r2_account_id'] ?? ( $current['r2_account_id'] ?? '' ) ),
 			'r2_access_key_id'     => sanitize_text_field( $settings['r2_access_key_id'] ?? ( $current['r2_access_key_id'] ?? '' ) ),
 			'r2_secret_access_key' => '',
@@ -118,18 +117,8 @@ class ZoeCloud_Admin {
 			'excluded_paths'       => $this->sanitize_excluded_paths( $settings['excluded_paths'] ?? ( $current['excluded_paths'] ?? array() ) ),
 		);
 
-		$client_secret = trim( (string) ( $settings['drive_client_secret'] ?? '' ) );
-		$refresh_token = trim( (string) ( $settings['drive_refresh_token'] ?? '' ) );
-		$r2_secret     = trim( (string) ( $settings['r2_secret_access_key'] ?? '' ) );
-		$s3_secret     = trim( (string) ( $settings['s3_secret_access_key'] ?? '' ) );
-
-		$clean['drive_client_secret'] = '' !== $client_secret
-			? $this->crypto->encrypt( $client_secret )
-			: ( $current['drive_client_secret'] ?? '' );
-
-		$clean['drive_refresh_token'] = '' !== $refresh_token
-			? $this->crypto->encrypt( $refresh_token )
-			: ( $current['drive_refresh_token'] ?? '' );
+		$r2_secret = trim( (string) ( $settings['r2_secret_access_key'] ?? '' ) );
+		$s3_secret = trim( (string) ( $settings['s3_secret_access_key'] ?? '' ) );
 
 		$clean['r2_secret_access_key'] = '' !== $r2_secret
 			? $this->crypto->encrypt( $r2_secret )
@@ -239,26 +228,24 @@ class ZoeCloud_Admin {
 	 * @return void
 	 */
 	public function render_page() {
-		$settings = wp_parse_args(
+		$settings       = wp_parse_args(
 			get_option( 'zoecloud_settings', array() ),
 			array(
-				'drive_client_id'    => '',
-				'drive_project_name' => get_bloginfo( 'name' ),
-				'storage_provider'   => 'r2',
-				'r2_account_id'       => '',
-				'r2_access_key_id'    => '',
-				'r2_bucket'           => '',
-				'r2_prefix'           => 'zoe-cloud',
-				's3_access_key_id'    => '',
-				's3_bucket'           => '',
-				's3_region'           => 'us-east-1',
-				's3_prefix'           => '',
-				'retention_limit'    => 10,
-				'schedule'           => 'daily',
-				'schedule_time'      => '02:00',
-				'schedule_weekday'   => 'monday',
-				'auto_upload_drive'  => 1,
-				'excluded_paths'     => array(),
+				'storage_provider'  => 'r2',
+				'r2_account_id'     => '',
+				'r2_access_key_id'  => '',
+				'r2_bucket'         => '',
+				'r2_prefix'         => 'zoe-cloud',
+				's3_access_key_id'  => '',
+				's3_bucket'         => '',
+				's3_region'         => 'us-east-1',
+				's3_prefix'         => '',
+				'retention_limit'   => 10,
+				'schedule'          => 'daily',
+				'schedule_time'     => '02:00',
+				'schedule_weekday'  => 'monday',
+				'auto_upload_drive' => 1,
+				'excluded_paths'    => array(),
 			)
 		);
 		$excluded_paths = is_array( $settings['excluded_paths'] ) ? implode( "\n", $settings['excluded_paths'] ) : (string) $settings['excluded_paths'];
@@ -525,5 +512,4 @@ class ZoeCloud_Admin {
 		</div>
 		<?php
 	}
-
 }
