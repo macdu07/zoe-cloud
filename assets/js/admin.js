@@ -16,6 +16,8 @@
 		restoreFeedback: document.getElementById( 'zoecloud-restore-feedback' ),
 		tabs: document.querySelectorAll( '[data-zoecloud-tab]' ),
 		tabPanels: document.querySelectorAll( '[data-zoecloud-panel]' ),
+		scheduleSelect: document.getElementById( 'zoecloud_schedule' ),
+		scheduleWeekdayRow: document.getElementById( 'zoecloud_schedule_weekday_row' ),
 		storageProvider: document.getElementById( 'zoecloud_storage_provider' ),
 		providerFields: document.querySelectorAll( '[data-zoecloud-provider-fields]' ),
 		restoreModeBtns: document.querySelectorAll( '[data-zoecloud-restore-mode]' ),
@@ -245,9 +247,18 @@
 		} );
 	};
 
+	const updateScheduleFields = () => {
+		if ( state.scheduleWeekdayRow ) {
+			state.scheduleWeekdayRow.hidden = state.scheduleSelect?.value !== 'weekly';
+		}
+	};
+
 	state.tabs.forEach( ( tab ) => {
 		tab.addEventListener( 'click', () => activateTab( tab.dataset.zoecloudTab ) );
 	} );
+
+	state.scheduleSelect?.addEventListener( 'change', updateScheduleFields );
+	updateScheduleFields();
 
 	state.storageProvider?.addEventListener( 'change', updateProviderFields );
 	updateProviderFields();

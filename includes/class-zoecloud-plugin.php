@@ -79,6 +79,8 @@ class ZoeCloud_Plugin {
 			's3_prefix'            => '',
 			'retention_limit'     => 10,
 			'schedule'            => 'daily',
+			'schedule_time'       => '02:00',
+			'schedule_weekday'    => 'monday',
 			'auto_upload_drive'   => 1,
 			'excluded_paths'      => array(),
 		);
@@ -88,7 +90,7 @@ class ZoeCloud_Plugin {
 		}
 
 		if ( ! wp_next_scheduled( 'zoecloud_run_scheduled_backup' ) ) {
-			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', 'zoecloud_run_scheduled_backup' );
+			wp_schedule_event( self::get_next_schedule_timestamp( $defaults ), 'daily', 'zoecloud_run_scheduled_backup' );
 		}
 	}
 
@@ -115,8 +117,12 @@ class ZoeCloud_Plugin {
 	public function sync_schedule( $old_value, $value ) {
 		$old_schedule = $old_value['schedule'] ?? 'daily';
 		$new_schedule = $value['schedule'] ?? 'daily';
+		$old_time     = $old_value['schedule_time'] ?? '02:00';
+		$new_time     = $value['schedule_time'] ?? '02:00';
+		$old_weekday  = $old_value['schedule_weekday'] ?? 'monday';
+		$new_weekday  = $value['schedule_weekday'] ?? 'monday';
 
-		if ( $old_schedule === $new_schedule ) {
+		if ( $old_schedule === $new_schedule && $old_time === $new_time && $old_weekday === $new_weekday ) {
 			return;
 		}
 
@@ -126,6 +132,57 @@ class ZoeCloud_Plugin {
 			wp_unschedule_event( $timestamp, 'zoecloud_run_scheduled_backup' );
 		}
 
-		wp_schedule_event( time() + HOUR_IN_SECONDS, $new_schedule, 'zoecloud_run_scheduled_backup' );
+		wp_schedule_event( self::get_next_schedule_timestamp( $value ), $new_schedule, 'zoecloud_run_scheduled_backup' );
+	}
+
+	/**
+	 * Calculate the next scheduled backup timestamp.
+	 *
+	 * @param array $settings Plugin settings.
+	 * @return int
+	 */
+	private static function get_next_schedule_timestamp( array $settings ) {
+		$schedule = $settings['schedule'] ?? 'daily';
+		$time     = $settings['schedule_time'] ?? '02:00';
+		$weekday  = $settings['schedule_weekday'] ?? 'monday';
+
+		if ( ! preg_match( '/^([01]\d|2[0-3]):([0-5]\d)$/', $time, $matches ) ) {
+			$matches = array( '', '02', '00' );
+		}
+
+		$hour   = (int) $matches[1];
+		$minute = (int) $matches[2];
+		$now    = new DateTimeImmutable( 'now', wp_timezone() );
+
+		if ( 'weekly' === $schedule ) {
+			$weekdays = array(
+				'sunday'    => 0,
+				'monday'    => 1,
+				'tuesday'   => 2,
+				'wednesday' => 3,
+				'thursday'  => 4,
+				'friday'    => 5,
+				'saturday'  => 6,
+			);
+
+			$target_day = $weekdays[ $weekday ] ?? $weekdays['monday'];
+			$current_day = (int) $now->format( 'w' );
+			$days_ahead = ( $target_day - $current_day + 7 ) % 7;
+			$next = $now->setTime( $hour, $minute, 0 )->modify( '+' . $days_ahead . ' days' );
+
+			if ( $next <= $now ) {
+				$next = $next->modify( '+7 days' );
+			}
+
+			return $next->getTimestamp();
+		}
+
+		$next = $now->setTime( $hour, $minute, 0 );
+
+		if ( $next <= $now ) {
+			$next = $next->modify( '+1 day' );
+		}
+
+		return $next->getTimestamp();
 	}
 }

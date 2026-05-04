@@ -89,6 +89,10 @@ class ZoeCloud_Admin {
 		$provider = in_array( $provider, array( 'r2', 's3' ), true ) ? $provider : 'r2';
 		$schedule = sanitize_key( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) );
 		$schedule = in_array( $schedule, array( 'hourly', 'twicedaily', 'daily', 'weekly' ), true ) ? $schedule : 'daily';
+		$schedule_time = sanitize_text_field( $settings['schedule_time'] ?? ( $current['schedule_time'] ?? '02:00' ) );
+		$schedule_time = preg_match( '/^([01]\d|2[0-3]):[0-5]\d$/', $schedule_time ) ? $schedule_time : '02:00';
+		$schedule_weekday = sanitize_key( $settings['schedule_weekday'] ?? ( $current['schedule_weekday'] ?? 'monday' ) );
+		$schedule_weekday = in_array( $schedule_weekday, array( 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday' ), true ) ? $schedule_weekday : 'monday';
 		$clean   = array(
 			'drive_client_id'     => sanitize_text_field( $settings['drive_client_id'] ?? ( $current['drive_client_id'] ?? '' ) ),
 			'drive_client_secret' => '',
@@ -107,6 +111,8 @@ class ZoeCloud_Admin {
 			's3_prefix'            => $this->sanitize_storage_prefix( $settings['s3_prefix'] ?? ( $current['s3_prefix'] ?? '' ) ),
 			'retention_limit'      => max( 1, absint( $settings['retention_limit'] ?? ( $current['retention_limit'] ?? 10 ) ) ),
 			'schedule'             => $schedule,
+			'schedule_time'        => $schedule_time,
+			'schedule_weekday'     => $schedule_weekday,
 			'auto_upload_drive'    => 'backup' === $section ? ( ! empty( $settings['auto_upload_drive'] ) ? 1 : 0 ) : absint( $current['auto_upload_drive'] ?? 1 ),
 			'excluded_paths'       => $this->sanitize_excluded_paths( $settings['excluded_paths'] ?? ( $current['excluded_paths'] ?? array() ) ),
 		);
@@ -248,6 +254,8 @@ class ZoeCloud_Admin {
 				's3_prefix'           => '',
 				'retention_limit'    => 10,
 				'schedule'           => 'daily',
+				'schedule_time'      => '02:00',
+				'schedule_weekday'   => 'monday',
 				'auto_upload_drive'  => 1,
 				'excluded_paths'     => array(),
 			)
@@ -305,6 +313,24 @@ class ZoeCloud_Admin {
 											<option value="twicedaily" <?php selected( $settings['schedule'], 'twicedaily' ); ?>><?php esc_html_e( 'Twice Daily', 'zoe-cloud' ); ?></option>
 											<option value="daily" <?php selected( $settings['schedule'], 'daily' ); ?>><?php esc_html_e( 'Daily', 'zoe-cloud' ); ?></option>
 											<option value="weekly" <?php selected( $settings['schedule'], 'weekly' ); ?>><?php esc_html_e( 'Weekly', 'zoe-cloud' ); ?></option>
+										</select>
+									</td>
+								</tr>
+								<tr>
+									<th scope="row"><label for="zoecloud_schedule_time"><?php esc_html_e( 'Backup Time', 'zoe-cloud' ); ?></label></th>
+									<td><input type="time" id="zoecloud_schedule_time" name="zoecloud_settings[schedule_time]" value="<?php echo esc_attr( $settings['schedule_time'] ); ?>"></td>
+								</tr>
+								<tr id="zoecloud_schedule_weekday_row">
+									<th scope="row"><label for="zoecloud_schedule_weekday"><?php esc_html_e( 'Weekly Day', 'zoe-cloud' ); ?></label></th>
+									<td>
+										<select id="zoecloud_schedule_weekday" name="zoecloud_settings[schedule_weekday]">
+											<option value="monday" <?php selected( $settings['schedule_weekday'], 'monday' ); ?>><?php esc_html_e( 'Monday', 'zoe-cloud' ); ?></option>
+											<option value="tuesday" <?php selected( $settings['schedule_weekday'], 'tuesday' ); ?>><?php esc_html_e( 'Tuesday', 'zoe-cloud' ); ?></option>
+											<option value="wednesday" <?php selected( $settings['schedule_weekday'], 'wednesday' ); ?>><?php esc_html_e( 'Wednesday', 'zoe-cloud' ); ?></option>
+											<option value="thursday" <?php selected( $settings['schedule_weekday'], 'thursday' ); ?>><?php esc_html_e( 'Thursday', 'zoe-cloud' ); ?></option>
+											<option value="friday" <?php selected( $settings['schedule_weekday'], 'friday' ); ?>><?php esc_html_e( 'Friday', 'zoe-cloud' ); ?></option>
+											<option value="saturday" <?php selected( $settings['schedule_weekday'], 'saturday' ); ?>><?php esc_html_e( 'Saturday', 'zoe-cloud' ); ?></option>
+											<option value="sunday" <?php selected( $settings['schedule_weekday'], 'sunday' ); ?>><?php esc_html_e( 'Sunday', 'zoe-cloud' ); ?></option>
 										</select>
 									</td>
 								</tr>
