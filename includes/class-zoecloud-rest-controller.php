@@ -45,6 +45,46 @@ class ZoeCloud_REST_Controller {
 	}
 
 	/**
+	 * Resolve the absolute path for a temp upload key.
+	 *
+	 * @param string $key Temp key.
+	 * @return string|WP_Error
+	 */
+	private function resolve_temp_path( $key ) {
+		if ( ! preg_match( '/^[a-zA-Z0-9]{32}$/', $key ) ) {
+			return new WP_Error( 'zoecloud_invalid_temp_key', __( 'Invalid upload key.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$path = $this->get_temp_upload_dir() . '/zoecloud-upload-' . $key . '.zip';
+
+		if ( ! file_exists( $path ) ) {
+			return new WP_Error( 'zoecloud_temp_not_found', __( 'Uploaded file not found. Please upload again.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		}
+
+		return $path;
+	}
+
+	/**
+	 * Return (and protect) the temp uploads directory.
+	 *
+	 * @return string
+	 */
+	private function get_temp_upload_dir() {
+		$uploads = wp_upload_dir();
+		$dir     = trailingslashit( $uploads['basedir'] ) . 'zoecloud-uploads';
+
+		wp_mkdir_p( $dir );
+
+		$htaccess = $dir . '/.htaccess';
+
+		if ( ! file_exists( $htaccess ) ) {
+			file_put_contents( $htaccess, 'deny from all' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		}
+
+		return $dir;
+	}
+
+	/**
 	 * Register routes.
 	 *
 	 * @return void
@@ -140,6 +180,16 @@ class ZoeCloud_REST_Controller {
 			array(
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => array( $this, 'download_backup' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
+			'/restore/upload',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'upload_restore_file' ),
 				'permission_callback' => array( $this, 'permissions' ),
 			)
 		);
@@ -255,15 +305,26 @@ class ZoeCloud_REST_Controller {
 	}
 
 	/**
-	 * Run a restore flow from an existing backup filename.
+	 * Run a restore flow from an existing backup filename or an uploaded temp file.
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function restore_backup( WP_REST_Request $request ) {
-		$filename = (string) $request->get_param( 'filename' );
-		$path     = $this->backup_manager->get_backup_path( $filename );
-		$result   = $this->restore_manager->restore_backup(
+		$temp_key = (string) $request->get_param( 'temp_key' );
+
+		if ( $temp_key ) {
+			$path = $this->resolve_temp_path( $temp_key );
+
+			if ( is_wp_error( $path ) ) {
+				return $path;
+			}
+		} else {
+			$filename = (string) $request->get_param( 'filename' );
+			$path     = $this->backup_manager->get_backup_path( $filename );
+		}
+
+		$result = $this->restore_manager->restore_backup(
 			$path,
 			(string) $request->get_param( 'search' ),
 			(string) $request->get_param( 'replace' ),
@@ -274,6 +335,10 @@ class ZoeCloud_REST_Controller {
 			return $result;
 		}
 
+		if ( $temp_key && file_exists( $path ) ) {
+			wp_delete_file( $path );
+		}
+
 		return rest_ensure_response(
 			array(
 				'restored' => true,
@@ -282,21 +347,76 @@ class ZoeCloud_REST_Controller {
 	}
 
 	/**
-	 * Validate a backup before restore.
+	 * Validate a backup before restore (supports existing filename or temp_key).
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function validate_restore( WP_REST_Request $request ) {
-		$filename = (string) $request->get_param( 'filename' );
-		$path     = $this->backup_manager->get_backup_path( $filename );
-		$result   = $this->restore_manager->get_restore_plan( $path );
+		$temp_key = (string) $request->get_param( 'temp_key' );
+
+		if ( $temp_key ) {
+			$path = $this->resolve_temp_path( $temp_key );
+
+			if ( is_wp_error( $path ) ) {
+				return $path;
+			}
+		} else {
+			$filename = (string) $request->get_param( 'filename' );
+			$path     = $this->backup_manager->get_backup_path( $filename );
+		}
+
+		$result = $this->restore_manager->get_restore_plan( $path );
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
 
 		return rest_ensure_response( $result );
+	}
+
+	/**
+	 * Accept an uploaded ZIP file for restore.
+	 *
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function upload_restore_file() {
+		// phpcs:disable WordPress.Security.ValidatedSanitizedInput
+		if ( empty( $_FILES['zip_file'] ) || ! is_array( $_FILES['zip_file'] ) ) {
+			return new WP_Error( 'zoecloud_upload_missing', __( 'No file uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$file = $_FILES['zip_file'];
+		// phpcs:enable
+
+		if ( UPLOAD_ERR_OK !== (int) $file['error'] ) {
+			return new WP_Error( 'zoecloud_upload_error', __( 'File upload failed.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		if ( (int) $file['size'] > wp_max_upload_size() ) {
+			return new WP_Error( 'zoecloud_upload_too_large', __( 'Uploaded file exceeds the maximum upload size.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$original_name = strtolower( sanitize_file_name( (string) ( $file['name'] ?? '' ) ) );
+
+		if ( '.zip' !== substr( $original_name, -4 ) ) {
+			return new WP_Error( 'zoecloud_upload_invalid_type', __( 'Only ZIP archives can be uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$temp_dir = $this->get_temp_upload_dir();
+		$key      = wp_generate_password( 32, false, false );
+		$dest     = $temp_dir . '/zoecloud-upload-' . $key . '.zip';
+
+		if ( ! move_uploaded_file( (string) $file['tmp_name'], $dest ) ) {
+			return new WP_Error( 'zoecloud_upload_move_failed', __( 'Could not save the uploaded file.', 'zoe-cloud' ), array( 'status' => 500 ) );
+		}
+
+		return rest_ensure_response(
+			array(
+				'temp_key' => $key,
+				'size'     => filesize( $dest ),
+			)
+		);
 	}
 
 	/**

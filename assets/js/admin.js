@@ -18,6 +18,15 @@
 		tabPanels: document.querySelectorAll( '[data-zoecloud-panel]' ),
 		storageProvider: document.getElementById( 'zoecloud_storage_provider' ),
 		providerFields: document.querySelectorAll( '[data-zoecloud-provider-fields]' ),
+		restoreModeBtns: document.querySelectorAll( '[data-zoecloud-restore-mode]' ),
+		restorePanels: document.querySelectorAll( '[data-zoecloud-restore-panel]' ),
+		uploadFileInput: document.getElementById( 'zoecloud-upload-file' ),
+		uploadZipButton: document.getElementById( 'zoecloud-upload-zip' ),
+		uploadFeedback: document.getElementById( 'zoecloud-upload-feedback' ),
+		uploadFilename: document.getElementById( 'zoecloud-upload-filename' ),
+		uploadArea: document.getElementById( 'zoecloud-upload-area' ),
+		restoreMode: 'existing',
+		currentTempKey: '',
 		jobStatusTimer: null,
 		keepFinalJobStatus: false,
 	};
@@ -55,21 +64,23 @@
 		}
 
 		state.table.innerHTML = backups
-			.map(
-				( backup ) => `
+			.map( ( backup ) => {
+				const downloadUrl = zoecloudAdmin.root + 'backup-file?filename=' + encodeURIComponent( backup.filename || '' ) + '&_wpnonce=' + zoecloudAdmin.nonce;
+
+				return `
 					<tr>
 						<td>${ backup.created_at || '' }</td>
 						<td>${ backup.filename || '' }</td>
 						<td>${ formatBytes( backup.size || 0 ) }</td>
 						<td>${ renderCloudStatus( backup ) }</td>
 						<td>
-							<a class="button" href="${ backup.download_url || '#' }">Download</a>
+							<a class="button" href="${ downloadUrl }">Download</a>
 							<button type="button" class="button zoecloud-select-restore" data-filename="${ backup.filename || '' }">Select</button>
 							<button type="button" class="button zoecloud-delete-backup" data-id="${ backup.id || backup.filename || '' }" data-filename="${ backup.filename || '' }">Delete</button>
 						</td>
 					</tr>
-				`
-			)
+				`;
+			} )
 			.join( '' );
 
 		if ( state.restoreFilename ) {
@@ -361,16 +372,139 @@
 		state.restoreFeedback.classList.toggle( 'is-error', isError );
 	};
 
-	state.validateRestore?.addEventListener( 'click', async () => {
-		const filename = state.restoreFilename?.value || '';
+	const switchRestoreMode = ( mode ) => {
+		state.restoreMode = mode;
+		state.currentTempKey = '';
 
-		if ( ! filename ) {
-			setRestoreFeedback( 'Select a backup first.', true );
+		state.restoreModeBtns.forEach( ( btn ) => {
+			btn.classList.toggle( 'is-active', btn.dataset.zoecloudRestoreMode === mode );
+		} );
+
+		state.restorePanels.forEach( ( panel ) => {
+			panel.hidden = panel.dataset.zoecloudRestorePanel !== mode;
+		} );
+
+		setRestoreFeedback( '' );
+
+		if ( state.uploadFeedback ) {
+			state.uploadFeedback.textContent = '';
+			state.uploadFeedback.classList.remove( 'is-error' );
+		}
+	};
+
+	state.restoreModeBtns.forEach( ( btn ) => {
+		btn.addEventListener( 'click', () => switchRestoreMode( btn.dataset.zoecloudRestoreMode ) );
+	} );
+
+	state.uploadFileInput?.addEventListener( 'change', () => {
+		const file = state.uploadFileInput.files?.[ 0 ];
+
+		if ( state.uploadFilename ) {
+			state.uploadFilename.textContent = file ? file.name : 'Choose a ZIP file or drop it here';
+		}
+
+		state.currentTempKey = '';
+	} );
+
+	state.uploadArea?.addEventListener( 'dragover', ( event ) => {
+		event.preventDefault();
+		state.uploadArea.classList.add( 'is-dragover' );
+	} );
+
+	state.uploadArea?.addEventListener( 'dragleave', () => {
+		state.uploadArea.classList.remove( 'is-dragover' );
+	} );
+
+	state.uploadArea?.addEventListener( 'drop', ( event ) => {
+		event.preventDefault();
+		state.uploadArea.classList.remove( 'is-dragover' );
+
+		const file = event.dataTransfer?.files?.[ 0 ];
+
+		if ( file && state.uploadFileInput ) {
+			const dt = new DataTransfer();
+			dt.items.add( file );
+			state.uploadFileInput.files = dt.files;
+
+			if ( state.uploadFilename ) {
+				state.uploadFilename.textContent = file.name;
+			}
+
+			state.currentTempKey = '';
+		}
+	} );
+
+	const setUploadFeedback = ( message, isError = false ) => {
+		if ( ! state.uploadFeedback ) {
 			return;
 		}
 
+		state.uploadFeedback.textContent = message;
+		state.uploadFeedback.classList.toggle( 'is-error', isError );
+	};
+
+	state.uploadZipButton?.addEventListener( 'click', async () => {
+		const file = state.uploadFileInput?.files?.[ 0 ];
+
+		if ( ! file ) {
+			setUploadFeedback( 'Select a ZIP file first.', true );
+			return;
+		}
+
+		state.uploadZipButton.disabled = true;
+		setUploadFeedback( 'Uploading…' );
+		state.currentTempKey = '';
+
+		const formData = new FormData();
+		formData.append( 'zip_file', file );
+
 		try {
-			const plan = await request( `restore?filename=${ encodeURIComponent( filename ) }` );
+			const response = await fetch( zoecloudAdmin.root + 'restore/upload', {
+				method: 'POST',
+				headers: {
+					'X-WP-Nonce': zoecloudAdmin.nonce,
+				},
+				body: formData,
+			} );
+
+			const data = await response.json().catch( () => ( {} ) );
+
+			if ( ! response.ok ) {
+				throw new Error( data.message || 'Upload failed' );
+			}
+
+			state.currentTempKey = data.temp_key || '';
+			setUploadFeedback( `File uploaded (${ formatBytes( data.size || 0 ) }). Ready to validate or restore.` );
+		} catch ( error ) {
+			setUploadFeedback( error.message, true );
+		} finally {
+			state.uploadZipButton.disabled = false;
+		}
+	} );
+
+	state.validateRestore?.addEventListener( 'click', async () => {
+		let queryParam;
+
+		if ( state.restoreMode === 'upload' ) {
+			if ( ! state.currentTempKey ) {
+				setRestoreFeedback( 'Upload a ZIP file first.', true );
+				return;
+			}
+
+			queryParam = `temp_key=${ encodeURIComponent( state.currentTempKey ) }`;
+		} else {
+			const filename = state.restoreFilename?.value || '';
+
+			if ( ! filename ) {
+				setRestoreFeedback( 'Select a backup first.', true );
+				return;
+			}
+
+			queryParam = `filename=${ encodeURIComponent( filename ) }`;
+		}
+
+		try {
+			const plan = await request( `restore?${ queryParam }` );
 			setRestoreFeedback(
 				`Valid backup. Origin: ${ plan.origin_home_url || 'unknown' }. Files: ${ plan.files_count ?? 'unknown' }. Database rows: ${ plan.database_rows ?? 'unknown' }.`
 			);
@@ -380,11 +514,34 @@
 	} );
 
 	state.runRestore?.addEventListener( 'click', async () => {
-		const filename = state.restoreFilename?.value || '';
+		let body;
 
-		if ( ! filename ) {
-			setRestoreFeedback( 'Select a backup first.', true );
-			return;
+		if ( state.restoreMode === 'upload' ) {
+			if ( ! state.currentTempKey ) {
+				setRestoreFeedback( 'Upload a ZIP file first.', true );
+				return;
+			}
+
+			body = {
+				temp_key: state.currentTempKey,
+				search: state.restoreSearch?.value || '',
+				replace: state.restoreReplace?.value || '',
+				confirm: true,
+			};
+		} else {
+			const filename = state.restoreFilename?.value || '';
+
+			if ( ! filename ) {
+				setRestoreFeedback( 'Select a backup first.', true );
+				return;
+			}
+
+			body = {
+				filename,
+				search: state.restoreSearch?.value || '',
+				replace: state.restoreReplace?.value || '',
+				confirm: true,
+			};
 		}
 
 		if ( ! window.confirm( 'This will overwrite files and database tables. Continue?' ) ) {
@@ -397,14 +554,23 @@
 		try {
 			await request( 'restore', {
 				method: 'POST',
-				body: {
-					filename,
-					search: state.restoreSearch?.value || '',
-					replace: state.restoreReplace?.value || '',
-					confirm: true,
-				},
+				body,
 			} );
 			setRestoreFeedback( 'Restore completed.' );
+
+			if ( state.restoreMode === 'upload' ) {
+				state.currentTempKey = '';
+
+				if ( state.uploadFileInput ) {
+					state.uploadFileInput.value = '';
+				}
+
+				if ( state.uploadFilename ) {
+					state.uploadFilename.textContent = 'Choose a ZIP file or drop it here';
+				}
+
+				setUploadFeedback( '' );
+			}
 		} catch ( error ) {
 			setRestoreFeedback( error.message, true );
 		} finally {

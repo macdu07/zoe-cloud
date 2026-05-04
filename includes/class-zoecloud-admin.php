@@ -87,6 +87,8 @@ class ZoeCloud_Admin {
 		$section = sanitize_key( $settings['settings_section'] ?? 'backup' );
 		$provider = sanitize_key( $settings['storage_provider'] ?? ( $current['storage_provider'] ?? 'r2' ) );
 		$provider = in_array( $provider, array( 'r2', 's3' ), true ) ? $provider : 'r2';
+		$schedule = sanitize_key( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) );
+		$schedule = in_array( $schedule, array( 'hourly', 'twicedaily', 'daily', 'weekly' ), true ) ? $schedule : 'daily';
 		$clean   = array(
 			'drive_client_id'     => sanitize_text_field( $settings['drive_client_id'] ?? ( $current['drive_client_id'] ?? '' ) ),
 			'drive_client_secret' => '',
@@ -104,7 +106,7 @@ class ZoeCloud_Admin {
 			's3_region'            => $this->sanitize_s3_region( $settings['s3_region'] ?? ( $current['s3_region'] ?? 'us-east-1' ) ),
 			's3_prefix'            => $this->sanitize_storage_prefix( $settings['s3_prefix'] ?? ( $current['s3_prefix'] ?? '' ) ),
 			'retention_limit'      => max( 1, absint( $settings['retention_limit'] ?? ( $current['retention_limit'] ?? 10 ) ) ),
-			'schedule'             => sanitize_text_field( $settings['schedule'] ?? ( $current['schedule'] ?? 'daily' ) ),
+			'schedule'             => $schedule,
 			'auto_upload_drive'    => 'backup' === $section ? ( ! empty( $settings['auto_upload_drive'] ) ? 1 : 0 ) : absint( $current['auto_upload_drive'] ?? 1 ),
 			'excluded_paths'       => $this->sanitize_excluded_paths( $settings['excluded_paths'] ?? ( $current['excluded_paths'] ?? array() ) ),
 		);
@@ -302,6 +304,7 @@ class ZoeCloud_Admin {
 											<option value="hourly" <?php selected( $settings['schedule'], 'hourly' ); ?>><?php esc_html_e( 'Hourly', 'zoe-cloud' ); ?></option>
 											<option value="twicedaily" <?php selected( $settings['schedule'], 'twicedaily' ); ?>><?php esc_html_e( 'Twice Daily', 'zoe-cloud' ); ?></option>
 											<option value="daily" <?php selected( $settings['schedule'], 'daily' ); ?>><?php esc_html_e( 'Daily', 'zoe-cloud' ); ?></option>
+											<option value="weekly" <?php selected( $settings['schedule'], 'weekly' ); ?>><?php esc_html_e( 'Weekly', 'zoe-cloud' ); ?></option>
 										</select>
 									</td>
 								</tr>
@@ -342,11 +345,36 @@ class ZoeCloud_Admin {
 
 				<section class="zoecloud-card zoecloud-list">
 					<h2><?php esc_html_e( 'Restore', 'zoe-cloud' ); ?></h2>
-					<div class="zoecloud-restore-grid">
-						<label>
-							<?php esc_html_e( 'Backup', 'zoe-cloud' ); ?>
-							<select id="zoecloud-restore-filename"></select>
-						</label>
+
+					<div class="zoecloud-restore-mode">
+						<button type="button" class="zoecloud-restore-mode-btn is-active" data-zoecloud-restore-mode="existing"><?php esc_html_e( 'From existing backup', 'zoe-cloud' ); ?></button>
+						<button type="button" class="zoecloud-restore-mode-btn" data-zoecloud-restore-mode="upload"><?php esc_html_e( 'Upload ZIP', 'zoe-cloud' ); ?></button>
+					</div>
+
+					<div data-zoecloud-restore-panel="existing">
+						<div class="zoecloud-restore-grid">
+							<label>
+								<?php esc_html_e( 'Backup', 'zoe-cloud' ); ?>
+								<select id="zoecloud-restore-filename"></select>
+							</label>
+						</div>
+					</div>
+
+					<div data-zoecloud-restore-panel="upload" hidden>
+						<div class="zoecloud-upload-area" id="zoecloud-upload-area">
+							<input type="file" id="zoecloud-upload-file" accept=".zip" class="zoecloud-upload-input">
+							<label for="zoecloud-upload-file" class="zoecloud-upload-label">
+								<span class="zoecloud-upload-icon">&#8679;</span>
+								<span id="zoecloud-upload-filename"><?php esc_html_e( 'Choose a ZIP file or drop it here', 'zoe-cloud' ); ?></span>
+							</label>
+						</div>
+						<div class="zoecloud-actions">
+							<button type="button" class="button button-primary" id="zoecloud-upload-zip"><?php esc_html_e( 'Upload ZIP', 'zoe-cloud' ); ?></button>
+						</div>
+						<div id="zoecloud-upload-feedback" class="zoecloud-feedback"></div>
+					</div>
+
+					<div class="zoecloud-restore-grid zoecloud-restore-urls">
 						<label>
 							<?php esc_html_e( 'Search URL', 'zoe-cloud' ); ?>
 							<input type="url" id="zoecloud-restore-search" class="regular-text" value="<?php echo esc_attr( home_url() ); ?>">
@@ -356,6 +384,7 @@ class ZoeCloud_Admin {
 							<input type="url" id="zoecloud-restore-replace" class="regular-text" value="<?php echo esc_attr( home_url() ); ?>">
 						</label>
 					</div>
+
 					<div class="zoecloud-actions">
 						<button type="button" class="button" id="zoecloud-validate-restore"><?php esc_html_e( 'Validate Restore', 'zoe-cloud' ); ?></button>
 						<button type="button" class="button button-secondary" id="zoecloud-run-restore"><?php esc_html_e( 'Run Restore', 'zoe-cloud' ); ?></button>

@@ -144,7 +144,7 @@ class ZoeCloud_R2_Service {
 		}
 
 		$key      = ltrim( (string) $cloud['key'], '/' );
-		$headers = $this->build_signed_headers( $config, 'DELETE', $key, '' );
+		$headers = $this->build_signed_headers( $config, 'DELETE', $key, '', true );
 		$url     = $this->build_upload_url( $config, $key );
 
 		$response = wp_remote_request(
@@ -323,25 +323,33 @@ class ZoeCloud_R2_Service {
 	 * @param string $method   HTTP method.
 	 * @param string $key      Object key.
 	 * @param string $body     Request body.
+	 * @param bool   $unsigned Whether to use S3's unsigned payload marker.
 	 * @return array
 	 */
-	private function build_signed_headers( array $config, $method, $key, $body ) {
+	private function build_signed_headers( array $config, $method, $key, $body, $unsigned = false ) {
 		$timestamp     = gmdate( 'Ymd\THis\Z' );
 		$date          = gmdate( 'Ymd' );
 		$region        = $config['region'];
 		$service       = 's3';
 		$host          = wp_parse_url( $config['endpoint'], PHP_URL_HOST );
-		$payload_hash  = hash( 'sha256', $body );
+		$payload_hash  = $unsigned ? 'UNSIGNED-PAYLOAD' : hash( 'sha256', $body );
 		$canonical_uri = ! empty( $config['path_style'] )
 			? '/' . rawurlencode( $config['bucket'] ) . '/' . $this->encode_key_path( $key )
 			: '/' . $this->encode_key_path( $key );
 
 		$headers = array(
-			'content-type'         => 'application/zip',
 			'host'                 => $host,
 			'x-amz-content-sha256' => $payload_hash,
 			'x-amz-date'           => $timestamp,
 		);
+
+		// Only include content-type for requests that carry a body; omitting it for
+		// DELETE avoids a SignatureDoesNotMatch because AWS won't see that header.
+		if ( '' !== $body ) {
+			$headers['content-type'] = 'application/zip';
+		}
+
+		ksort( $headers );
 
 		$canonical_headers = '';
 		foreach ( $headers as $name => $value ) {
@@ -373,13 +381,18 @@ class ZoeCloud_R2_Service {
 		$signing_key       = $this->get_signing_key( $config['secret_key'], $date, $region, $service );
 		$signature         = hash_hmac( 'sha256', $string_to_sign, $signing_key );
 
-		return array(
+		$result = array(
 			'Authorization'        => 'AWS4-HMAC-SHA256 Credential=' . $config['access_key'] . '/' . $credential_scope . ', SignedHeaders=' . $signed_headers . ', Signature=' . $signature,
-			'Content-Type'         => $headers['content-type'],
 			'Host'                 => $headers['host'],
 			'X-Amz-Content-Sha256' => $headers['x-amz-content-sha256'],
 			'X-Amz-Date'           => $headers['x-amz-date'],
 		);
+
+		if ( isset( $headers['content-type'] ) ) {
+			$result['Content-Type'] = $headers['content-type'];
+		}
+
+		return $result;
 	}
 
 	/**

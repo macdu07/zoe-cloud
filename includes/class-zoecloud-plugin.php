@@ -35,8 +35,24 @@ class ZoeCloud_Plugin {
 		add_action( 'zoecloud_run_backup_job', array( $this->backup_manager, 'run_backup_job' ) );
 		add_action( 'admin_post_zoecloud_download_backup', array( $this->backup_manager, 'stream_backup_download' ) );
 		add_action( 'update_option_zoecloud_settings', array( $this, 'sync_schedule' ), 10, 2 );
+		add_filter( 'cron_schedules', array( $this, 'register_cron_schedules' ) );
 
 		$admin->hooks();
+	}
+
+	/**
+	 * Register custom WP-Cron intervals used by ZoeCloud.
+	 *
+	 * @param array $schedules Existing cron schedules.
+	 * @return array
+	 */
+	public function register_cron_schedules( $schedules ) {
+		$schedules['weekly'] = array(
+			'interval' => WEEK_IN_SECONDS,
+			'display'  => __( 'Once Weekly', 'zoe-cloud' ),
+		);
+
+		return $schedules;
 	}
 
 	/**

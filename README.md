@@ -13,6 +13,7 @@ The current implementation supports local backup creation, local downloads, rest
 - Store backup metadata in `manifest.json`.
 - Download generated ZIP files locally.
 - Restore an existing backup with URL search/replace.
+- Restore from a manually uploaded ZIP archive.
 - Preserve ZoeCloud backup records after restore.
 - Delete local backups from the dashboard and remove uploaded cloud objects.
 - Run manual and scheduled backups.
@@ -156,12 +157,10 @@ Use cloud credentials with the narrowest bucket permissions possible.
 ## Current Limitations
 
 - Cloud restore from R2/S3 is not implemented yet; backups are restored from local records/files.
-- Manual upload of external ZIP files for restore is not implemented yet.
 - Incremental backups are not implemented yet.
 
 ## Roadmap
 
-- Restore from manually uploaded ZIP.
 - Download/import backups from cloud providers.
 - Additional S3-compatible providers beyond R2 and AWS S3.
 - Google Drive via OAuth broker.
