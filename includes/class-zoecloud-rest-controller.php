@@ -248,7 +248,7 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function delete_backup( WP_REST_Request $request ) {
-		$result = $this->backup_manager->delete_backup( (string) $request['id'] );
+		$result = $this->backup_manager->delete_backup( sanitize_text_field( (string) $request['id'] ) );
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -277,7 +277,7 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function get_job( WP_REST_Request $request ) {
-		$job = $this->backup_manager->get_job( (string) $request['id'] );
+		$job = $this->backup_manager->get_job( sanitize_key( (string) $request['id'] ) );
 
 		if ( empty( $job ) ) {
 			return new WP_Error( 'zoecloud_job_missing', __( 'Job not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
@@ -293,7 +293,7 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function run_job_tick( WP_REST_Request $request ) {
-		$job_id = (string) $request['id'];
+		$job_id = sanitize_key( (string) $request['id'] );
 		$this->backup_manager->run_backup_job( $job_id );
 		$job = $this->backup_manager->get_job( $job_id );
 
@@ -320,7 +320,7 @@ class ZoeCloud_REST_Controller {
 				return $path;
 			}
 		} else {
-			$filename = (string) $request->get_param( 'filename' );
+			$filename = sanitize_file_name( (string) $request->get_param( 'filename' ) );
 			$path     = $this->backup_manager->get_backup_path( $filename );
 		}
 
@@ -362,7 +362,7 @@ class ZoeCloud_REST_Controller {
 				return $path;
 			}
 		} else {
-			$filename = (string) $request->get_param( 'filename' );
+			$filename = sanitize_file_name( (string) $request->get_param( 'filename' ) );
 			$path     = $this->backup_manager->get_backup_path( $filename );
 		}
 
@@ -391,6 +391,10 @@ class ZoeCloud_REST_Controller {
 
 		if ( UPLOAD_ERR_OK !== (int) $file['error'] ) {
 			return new WP_Error( 'zoecloud_upload_error', __( 'File upload failed.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		if ( empty( $file['tmp_name'] ) || ! is_uploaded_file( (string) $file['tmp_name'] ) ) {
+			return new WP_Error( 'zoecloud_upload_invalid', __( 'Uploaded file is invalid.', 'zoe-cloud' ), array( 'status' => 400 ) );
 		}
 
 		if ( (int) $file['size'] > wp_max_upload_size() ) {
@@ -426,10 +430,10 @@ class ZoeCloud_REST_Controller {
 	 * @return void|WP_Error
 	 */
 	public function download_backup( WP_REST_Request $request ) {
-		$filename = (string) $request->get_param( 'filename' );
+		$filename = sanitize_file_name( (string) $request->get_param( 'filename' ) );
 
 		if ( '' === $filename ) {
-			$filename = (string) $request->get_param( 'zoecloud_download' );
+			$filename = sanitize_file_name( (string) $request->get_param( 'zoecloud_download' ) );
 		}
 
 		$path     = $this->backup_manager->get_backup_path( $filename );

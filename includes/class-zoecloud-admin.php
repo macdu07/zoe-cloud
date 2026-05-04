@@ -83,6 +83,7 @@ class ZoeCloud_Admin {
 	 * @return array
 	 */
 	public function sanitize_settings( $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
 		$current = get_option( 'zoecloud_settings', array() );
 		$section = sanitize_key( $settings['settings_section'] ?? 'backup' );
 		$provider = sanitize_key( $settings['storage_provider'] ?? ( $current['storage_provider'] ?? 'r2' ) );

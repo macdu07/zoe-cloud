@@ -56,6 +56,17 @@
 		return data;
 	};
 
+	const escapeHtml = ( value ) => String( value ?? '' ).replace(
+		/[&<>"']/g,
+		( char ) => ( {
+			'&': '&amp;',
+			'<': '&lt;',
+			'>': '&gt;',
+			'"': '&quot;',
+			"'": '&#039;',
+		} )[ char ]
+	);
+
 	const renderBackups = ( backups ) => {
 		if ( ! backups.length ) {
 			state.table.innerHTML = '<tr><td colspan="5">No backups yet.</td></tr>';
@@ -67,18 +78,20 @@
 
 		state.table.innerHTML = backups
 			.map( ( backup ) => {
-				const downloadUrl = zoecloudAdmin.root + 'backup-file?filename=' + encodeURIComponent( backup.filename || '' ) + '&_wpnonce=' + zoecloudAdmin.nonce;
+				const filename = backup.filename || '';
+				const backupId = backup.id || filename;
+				const downloadUrl = zoecloudAdmin.root + 'backup-file?filename=' + encodeURIComponent( filename ) + '&_wpnonce=' + encodeURIComponent( zoecloudAdmin.nonce );
 
 				return `
 					<tr>
-						<td>${ backup.created_at || '' }</td>
-						<td>${ backup.filename || '' }</td>
+						<td>${ escapeHtml( backup.created_at || '' ) }</td>
+						<td>${ escapeHtml( filename ) }</td>
 						<td>${ formatBytes( backup.size || 0 ) }</td>
-						<td>${ renderCloudStatus( backup ) }</td>
+						<td>${ escapeHtml( renderCloudStatus( backup ) ) }</td>
 						<td>
-							<a class="button" href="${ downloadUrl }">Download</a>
-							<button type="button" class="button zoecloud-select-restore" data-filename="${ backup.filename || '' }">Select</button>
-							<button type="button" class="button zoecloud-delete-backup" data-id="${ backup.id || backup.filename || '' }" data-filename="${ backup.filename || '' }">Delete</button>
+							<a class="button" href="${ escapeHtml( downloadUrl ) }">Download</a>
+							<button type="button" class="button zoecloud-select-restore" data-filename="${ escapeHtml( filename ) }">Select</button>
+							<button type="button" class="button zoecloud-delete-backup" data-id="${ escapeHtml( backupId ) }" data-filename="${ escapeHtml( filename ) }">Delete</button>
 						</td>
 					</tr>
 				`;
@@ -88,7 +101,7 @@
 		if ( state.restoreFilename ) {
 			const currentValue = state.restoreFilename.value;
 			state.restoreFilename.innerHTML = backups
-				.map( ( backup ) => `<option value="${ backup.filename || '' }">${ backup.filename || '' }</option>` )
+				.map( ( backup ) => `<option value="${ escapeHtml( backup.filename || '' ) }">${ escapeHtml( backup.filename || '' ) }</option>` )
 				.join( '' );
 
 			if ( currentValue ) {
@@ -150,7 +163,7 @@
 		];
 
 		state.preflight.innerHTML = rows
-			.map( ( [ label, value ] ) => `<li class="${ value === false ? 'is-error' : '' }"><strong>${ label }:</strong> ${ value === true ? 'OK' : value === false ? 'Missing' : value }</li>` )
+			.map( ( [ label, value ] ) => `<li class="${ value === false ? 'is-error' : '' }"><strong>${ escapeHtml( label ) }:</strong> ${ escapeHtml( value === true ? 'OK' : value === false ? 'Missing' : value ) }</li>` )
 			.join( '' );
 
 		if ( state.createButton ) {
@@ -167,9 +180,9 @@
 		state.keepFinalJobStatus = [ 'completed', 'failed' ].includes( job.status );
 		state.jobStatus.innerHTML = `
 			<div class="zoecloud-progress">
-				<div class="zoecloud-progress-bar" style="width: ${ job.progress || 0 }%"></div>
+				<div class="zoecloud-progress-bar" style="width: ${ Math.max( 0, Math.min( 100, Number( job.progress ) || 0 ) ) }%"></div>
 			</div>
-			<p>${ job.message || 'Working...' } ${ job.progress || 0 }%</p>
+			<p>${ escapeHtml( job.message || 'Working...' ) } ${ escapeHtml( Math.max( 0, Math.min( 100, Number( job.progress ) || 0 ) ) ) }%</p>
 		`;
 	};
 
