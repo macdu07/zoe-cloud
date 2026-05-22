@@ -625,6 +625,9 @@
 
 				setUploadFeedback( '' );
 			}
+
+			alert( 'Restore completed successfully. The page will now reload.' );
+			window.location.reload();
 		} catch ( error ) {
 			setRestoreFeedback( error.message, true );
 		} finally {
