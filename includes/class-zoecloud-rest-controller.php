@@ -122,6 +122,16 @@ class ZoeCloud_REST_Controller {
 
 		register_rest_route(
 			'zoecloud/v1',
+			'/backups/upload',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'upload_backup_direct' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
 			'/backups/(?P<id>[^/]+)',
 			array(
 				'methods'             => WP_REST_Server::DELETABLE,
@@ -521,6 +531,85 @@ class ZoeCloud_REST_Controller {
 		header( 'Content-Length: ' . filesize( $path ) );
 		readfile( $path );
 		exit;
+	}
+
+	/**
+	 * Accept a ZIP upload and register it directly as a backup record.
+	 *
+	 * This is the single-step alternative to the two-step restore/upload +
+	 * restore/upload/import flow. The file is validated, moved to the backups
+	 * storage directory and stored in the backup registry in one request.
+	 *
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function upload_backup_direct() {
+		// phpcs:disable WordPress.Security.ValidatedSanitizedInput, WordPress.Security.NonceVerification.Missing
+		if ( empty( $_FILES['zip_file'] ) || ! is_array( $_FILES['zip_file'] ) ) {
+			return new WP_Error( 'zoecloud_upload_missing', __( 'No file uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$file = $_FILES['zip_file'];
+		// phpcs:enable
+
+		if ( UPLOAD_ERR_OK !== (int) $file['error'] ) {
+			return new WP_Error( 'zoecloud_upload_error', __( 'File upload failed.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		if ( empty( $file['tmp_name'] ) || ! is_uploaded_file( (string) $file['tmp_name'] ) ) {
+			return new WP_Error( 'zoecloud_upload_invalid', __( 'Uploaded file is invalid.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		if ( (int) $file['size'] > wp_max_upload_size() ) {
+			return new WP_Error( 'zoecloud_upload_too_large', __( 'Uploaded file exceeds the maximum upload size.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$original_name = strtolower( sanitize_file_name( (string) ( $file['name'] ?? '' ) ) );
+
+		if ( '.zip' !== substr( $original_name, -4 ) ) {
+			return new WP_Error( 'zoecloud_upload_invalid_type', __( 'Only ZIP archives can be uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$filetype = wp_check_filetype_and_ext(
+			(string) $file['tmp_name'],
+			$original_name,
+			array(
+				'zip' => 'application/zip',
+			)
+		);
+
+		if ( 'zip' !== ( $filetype['ext'] ?? '' ) ) {
+			return new WP_Error( 'zoecloud_upload_invalid_type', __( 'Only valid ZIP archives can be uploaded.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		// Write the upload to a temp location so we can validate the ZIP structure.
+		$temp_dir  = $this->get_temp_upload_dir();
+		$temp_key  = wp_generate_password( 32, false, false );
+		$temp_path = $temp_dir . '/zoecloud-upload-' . $temp_key . '.zip';
+
+		if ( ! move_uploaded_file( (string) $file['tmp_name'], $temp_path ) ) {
+			return new WP_Error( 'zoecloud_upload_move_failed', __( 'Could not save the uploaded file.', 'zoe-cloud' ), array( 'status' => 500 ) );
+		}
+
+		// Validate the ZIP is a well-formed ZoeCloud backup.
+		$validated = $this->restore_manager->validate_backup( $temp_path );
+
+		if ( is_wp_error( $validated ) ) {
+			wp_delete_file( $temp_path );
+			return $validated;
+		}
+
+		// Extract the manifest so metadata is stored with the backup record.
+		$manifest = is_array( $validated['manifest'] ?? null ) ? $validated['manifest'] : array();
+
+		// Import: move to backups storage dir and register the record.
+		$result = $this->backup_manager->import_uploaded_backup( $temp_path, $manifest );
+
+		if ( is_wp_error( $result ) ) {
+			wp_delete_file( $temp_path );
+			return $result;
+		}
+
+		return new WP_REST_Response( $result, 201 );
 	}
 
 	/**

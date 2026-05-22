@@ -24,7 +24,6 @@
 		restorePanels: document.querySelectorAll( '[data-zoecloud-restore-panel]' ),
 		uploadFileInput: document.getElementById( 'zoecloud-upload-file' ),
 		uploadZipButton: document.getElementById( 'zoecloud-upload-zip' ),
-		importZipButton: document.getElementById( 'zoecloud-import-zip' ),
 		uploadFeedback: document.getElementById( 'zoecloud-upload-feedback' ),
 		uploadFilename: document.getElementById( 'zoecloud-upload-filename' ),
 		uploadArea: document.getElementById( 'zoecloud-upload-area' ),
@@ -414,7 +413,6 @@
 
 	const switchRestoreMode = ( mode ) => {
 		state.restoreMode = mode;
-		state.currentTempKey = '';
 
 		state.restoreModeBtns.forEach( ( btn ) => {
 			btn.classList.toggle( 'is-active', btn.dataset.zoecloudRestoreMode === mode );
@@ -492,18 +490,13 @@
 		}
 
 		state.uploadZipButton.disabled = true;
-		setUploadFeedback( 'Uploading…' );
-		state.currentTempKey = '';
-
-		if ( state.importZipButton ) {
-			state.importZipButton.hidden = true;
-		}
+		setUploadFeedback( 'Uploading and importing backup…' );
 
 		const formData = new FormData();
 		formData.append( 'zip_file', file );
 
 		try {
-			const response = await fetch( buildUrl( 'restore/upload' ), {
+			const response = await fetch( buildUrl( 'backups/upload' ), {
 				method: 'POST',
 				headers: {
 					'X-WP-Nonce': zoecloudAdmin.nonce,
@@ -517,37 +510,7 @@
 				throw new Error( data.message || 'Upload failed' );
 			}
 
-			state.currentTempKey = data.temp_key || '';
-			setUploadFeedback( `File uploaded (${ formatBytes( data.size || 0 ) }). Ready to validate, restore, or import as backup.` );
-
-			if ( state.importZipButton ) {
-				state.importZipButton.hidden = false;
-			}
-		} catch ( error ) {
-			setUploadFeedback( error.message, true );
-		} finally {
-			state.uploadZipButton.disabled = false;
-		}
-	} );
-
-	state.importZipButton?.addEventListener( 'click', async () => {
-		if ( ! state.currentTempKey ) {
-			setUploadFeedback( 'Upload a ZIP file first.', true );
-			return;
-		}
-
-		state.importZipButton.disabled = true;
-		setUploadFeedback( 'Importing backup…' );
-
-		try {
-			const record = await request( 'restore/upload/import', {
-				method: 'POST',
-				body: { temp_key: state.currentTempKey },
-			} );
-
-			state.currentTempKey = '';
-			state.importZipButton.hidden = true;
-
+			// Clear the file input.
 			if ( state.uploadFileInput ) {
 				state.uploadFileInput.value = '';
 			}
@@ -556,14 +519,20 @@
 				state.uploadFilename.textContent = 'Choose a ZIP file or drop it here';
 			}
 
-			setUploadFeedback( `Backup imported: ${ record.filename || '' }. It now appears in the backup list.` );
+			setUploadFeedback( `Backup imported: ${ data.filename || '' }. It now appears in the backup list.` );
+
+			// Refresh the backup list and switch to the "existing" mode so
+			// the user can immediately select the new backup for restore.
 			await refresh();
+			switchRestoreMode( 'existing' );
+
+			if ( state.restoreFilename ) {
+				state.restoreFilename.value = data.filename || '';
+			}
 		} catch ( error ) {
 			setUploadFeedback( error.message, true );
 		} finally {
-			if ( state.importZipButton ) {
-				state.importZipButton.disabled = false;
-			}
+			state.uploadZipButton.disabled = false;
 		}
 	} );
 

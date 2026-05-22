@@ -383,8 +383,7 @@ class ZoeCloud_Admin {
 							</label>
 						</div>
 						<div class="zoecloud-actions">
-						<button type="button" class="button button-primary" id="zoecloud-upload-zip"><?php esc_html_e( 'Upload ZIP', 'zoe-cloud' ); ?></button>
-						<button type="button" class="button" id="zoecloud-import-zip" hidden><?php esc_html_e( 'Import as Backup', 'zoe-cloud' ); ?></button>
+						<button type="button" class="button button-primary" id="zoecloud-upload-zip"><?php esc_html_e( 'Upload Backup', 'zoe-cloud' ); ?></button>
 					</div>
 					<div id="zoecloud-upload-feedback" class="zoecloud-feedback"></div>
 					</div>
