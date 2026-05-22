@@ -24,6 +24,7 @@
 		restorePanels: document.querySelectorAll( '[data-zoecloud-restore-panel]' ),
 		uploadFileInput: document.getElementById( 'zoecloud-upload-file' ),
 		uploadZipButton: document.getElementById( 'zoecloud-upload-zip' ),
+		importZipButton: document.getElementById( 'zoecloud-import-zip' ),
 		uploadFeedback: document.getElementById( 'zoecloud-upload-feedback' ),
 		uploadFilename: document.getElementById( 'zoecloud-upload-filename' ),
 		uploadArea: document.getElementById( 'zoecloud-upload-area' ),
@@ -37,8 +38,31 @@
 		return;
 	}
 
+	/**
+	 * Build a full REST API URL, handling both pretty and non-pretty
+	 * permalink modes. When WordPress uses index.php?rest_route=... the
+	 * root URL already contains a "?" so any extra query parameters must
+	 * be appended with "&" rather than "?". Using the URL API ensures
+	 * searchParams are always correctly encoded and separated.
+	 *
+	 * @param {string} path Relative path, optionally including a "?" query string.
+	 * @returns {string}
+	 */
+	const buildUrl = ( path ) => {
+		const [ endpoint, queryString ] = path.split( '?' );
+		const url = new URL( zoecloudAdmin.root + endpoint );
+
+		if ( queryString ) {
+			new URLSearchParams( queryString ).forEach( ( value, key ) => {
+				url.searchParams.append( key, value );
+			} );
+		}
+
+		return url.toString();
+	};
+
 	const request = async ( path, options = {} ) => {
-		const response = await fetch( zoecloudAdmin.root + path, {
+		const response = await fetch( buildUrl( path ), {
 			method: options.method || 'GET',
 			headers: {
 				'Content-Type': 'application/json',
@@ -80,7 +104,7 @@
 			.map( ( backup ) => {
 				const filename = backup.filename || '';
 				const backupId = backup.id || filename;
-				const downloadUrl = zoecloudAdmin.root + 'backup-file?filename=' + encodeURIComponent( filename ) + '&_wpnonce=' + encodeURIComponent( zoecloudAdmin.nonce );
+				const downloadUrl = buildUrl( 'backup-file?filename=' + encodeURIComponent( filename ) + '&_wpnonce=' + encodeURIComponent( zoecloudAdmin.nonce ) );
 
 				return `
 					<tr>
@@ -471,11 +495,15 @@
 		setUploadFeedback( 'Uploading…' );
 		state.currentTempKey = '';
 
+		if ( state.importZipButton ) {
+			state.importZipButton.hidden = true;
+		}
+
 		const formData = new FormData();
 		formData.append( 'zip_file', file );
 
 		try {
-			const response = await fetch( zoecloudAdmin.root + 'restore/upload', {
+			const response = await fetch( buildUrl( 'restore/upload' ), {
 				method: 'POST',
 				headers: {
 					'X-WP-Nonce': zoecloudAdmin.nonce,
@@ -490,11 +518,52 @@
 			}
 
 			state.currentTempKey = data.temp_key || '';
-			setUploadFeedback( `File uploaded (${ formatBytes( data.size || 0 ) }). Ready to validate or restore.` );
+			setUploadFeedback( `File uploaded (${ formatBytes( data.size || 0 ) }). Ready to validate, restore, or import as backup.` );
+
+			if ( state.importZipButton ) {
+				state.importZipButton.hidden = false;
+			}
 		} catch ( error ) {
 			setUploadFeedback( error.message, true );
 		} finally {
 			state.uploadZipButton.disabled = false;
+		}
+	} );
+
+	state.importZipButton?.addEventListener( 'click', async () => {
+		if ( ! state.currentTempKey ) {
+			setUploadFeedback( 'Upload a ZIP file first.', true );
+			return;
+		}
+
+		state.importZipButton.disabled = true;
+		setUploadFeedback( 'Importing backup…' );
+
+		try {
+			const record = await request( 'restore/upload/import', {
+				method: 'POST',
+				body: { temp_key: state.currentTempKey },
+			} );
+
+			state.currentTempKey = '';
+			state.importZipButton.hidden = true;
+
+			if ( state.uploadFileInput ) {
+				state.uploadFileInput.value = '';
+			}
+
+			if ( state.uploadFilename ) {
+				state.uploadFilename.textContent = 'Choose a ZIP file or drop it here';
+			}
+
+			setUploadFeedback( `Backup imported: ${ record.filename || '' }. It now appears in the backup list.` );
+			await refresh();
+		} catch ( error ) {
+			setUploadFeedback( error.message, true );
+		} finally {
+			if ( state.importZipButton ) {
+				state.importZipButton.disabled = false;
+			}
 		}
 	} );
 

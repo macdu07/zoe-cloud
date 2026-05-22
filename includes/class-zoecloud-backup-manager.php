@@ -757,6 +757,64 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
+	 * Import an uploaded backup ZIP into the backups list.
+	 *
+	 * Moves the temporary file into the storage directory and registers a
+	 * backup record so the archive appears in the backup list and can be
+	 * selected for restore.
+	 *
+	 * @param string $temp_path   Absolute path to the uploaded temp ZIP.
+	 * @param array  $manifest    Manifest data already extracted from the ZIP.
+	 * @return array|WP_Error     Backup record on success or WP_Error on failure.
+	 */
+	public function import_uploaded_backup( $temp_path, array $manifest = array() ) {
+		if ( ! file_exists( $temp_path ) ) {
+			return new WP_Error( 'zoecloud_import_missing', __( 'Uploaded file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		}
+
+		$storage_dir = $this->get_storage_dir();
+		$original    = basename( $temp_path );
+
+		// Build a final filename: keep original name when it matches the
+		// plugin naming convention, otherwise prefix it with a timestamp.
+		if ( preg_match( '/^zoe-cloud-backup-.+\.zip$/i', $original ) ) {
+			$filename = sanitize_file_name( $original );
+		} else {
+			$timestamp = gmdate( 'Y-m-d-H-i' );
+			$slug      = sanitize_title_with_dashes( (string) ( $manifest['domain'] ?? wp_parse_url( home_url(), PHP_URL_HOST ) ) );
+			$filename  = sprintf( 'zoe-cloud-backup-%1$s-%2$s.zip', $slug, $timestamp );
+		}
+
+		$dest = trailingslashit( $storage_dir ) . $filename;
+
+		// Avoid clobbering an existing backup with the same name.
+		if ( file_exists( $dest ) ) {
+			$filename = wp_unique_filename( $storage_dir, $filename );
+			$dest     = trailingslashit( $storage_dir ) . $filename;
+		}
+
+		if ( ! rename( $temp_path, $dest ) ) {
+			return new WP_Error( 'zoecloud_import_move_failed', __( 'Could not move the uploaded file to the backups folder.', 'zoe-cloud' ) );
+		}
+
+		$record = array(
+			'id'           => wp_generate_uuid4(),
+			'created_at'   => current_time( 'mysql', true ),
+			'filename'     => $filename,
+			'path'         => $dest,
+			'download_url' => $this->build_download_url( $filename ),
+			'size'         => filesize( $dest ),
+			'manifest'     => $manifest,
+			'cloud'        => null,
+			'imported'     => true,
+		);
+
+		$this->store_record( $record );
+
+		return $record;
+	}
+
+	/**
 	 * Inspect server requirements before a backup runs.
 	 *
 	 * @return array

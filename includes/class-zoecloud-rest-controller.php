@@ -196,6 +196,16 @@ class ZoeCloud_REST_Controller {
 				'permission_callback' => array( $this, 'permissions' ),
 			)
 		);
+
+		register_rest_route(
+			'zoecloud/v1',
+			'/restore/upload/import',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'import_uploaded_backup' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
 	}
 
 	/**
@@ -444,6 +454,46 @@ class ZoeCloud_REST_Controller {
 				'size'     => filesize( $dest ),
 			)
 		);
+	}
+
+	/**
+	 * Import an uploaded temp ZIP as a registered backup.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function import_uploaded_backup( WP_REST_Request $request ) {
+		$temp_key = (string) $request->get_param( 'temp_key' );
+		$path     = $this->resolve_temp_path( $temp_key );
+
+		if ( is_wp_error( $path ) ) {
+			return $path;
+		}
+
+		// Extract the manifest from the ZIP so we can pass it to the record.
+		$manifest = array();
+		$zip      = new ZipArchive();
+
+		if ( true === $zip->open( $path ) ) {
+			$raw = $zip->getFromName( 'manifest.json' );
+			$zip->close();
+
+			if ( $raw ) {
+				$decoded = json_decode( $raw, true );
+
+				if ( is_array( $decoded ) ) {
+					$manifest = $decoded;
+				}
+			}
+		}
+
+		$result = $this->backup_manager->import_uploaded_backup( $path, $manifest );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return rest_ensure_response( $result );
 	}
 
 	/**
