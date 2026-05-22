@@ -3,7 +3,7 @@
  * Plugin Name: ZoeCloud
  * Plugin URI: https://maurouix.com/zoe-cloud
  * Description: WordPress backups with portable archives, restore tooling, and cloud uploads.
- * Version: 0.1.0
+ * Version: 0.1.1
  * Author: Mauricio Correa
  * Author URI: https://maurouix.com
  * License: GPL-2.0-or-later
