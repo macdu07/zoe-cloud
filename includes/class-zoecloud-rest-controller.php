@@ -132,10 +132,63 @@ class ZoeCloud_REST_Controller {
 
 		register_rest_route(
 			'zoecloud/v1',
-			'/backups/(?P<id>[^/]+)',
+			'/backups/(?P<id>(?!bulk-delete$)[^/]+)',
 			array(
-				'methods'             => WP_REST_Server::DELETABLE,
-				'callback'            => array( $this, 'delete_backup' ),
+				array(
+					'methods'             => WP_REST_Server::DELETABLE,
+					'callback'            => array( $this, 'delete_backup' ),
+					'permission_callback' => array( $this, 'permissions' ),
+				),
+				array(
+					'methods'             => 'PATCH',
+					'callback'            => array( $this, 'update_backup' ),
+					'permission_callback' => array( $this, 'permissions' ),
+				),
+			)
+		);
+
+		register_rest_route(
+			'zoecloud/v1',
+			'/backups/bulk-delete',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'bulk_delete_backups' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+		register_rest_route(
+			'zoecloud/v1',
+			'/storage/test',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'test_storage' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+		register_rest_route(
+			'zoecloud/v1',
+			'/activity',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'list_activity' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+		register_rest_route(
+			'zoecloud/v1',
+			'/activity/(?P<id>[^/]+)/download',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'download_activity' ),
+				'permission_callback' => array( $this, 'permissions' ),
+			)
+		);
+		register_rest_route(
+			'zoecloud/v1',
+			'/restores',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'create_restore_job' ),
 				'permission_callback' => array( $this, 'permissions' ),
 			)
 		);
@@ -224,12 +277,34 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response
 	 */
 	public function get_status() {
+		$settings       = wp_parse_args(
+			get_option( 'zoecloud_settings', array() ),
+			array(
+				'schedule_enabled' => 0,
+				'schedule'         => 'daily',
+				'schedule_time'    => '02:00',
+			)
+		);
+		$next_scheduled = wp_next_scheduled( 'zoecloud_run_scheduled_backup' );
+		$preflight      = $this->backup_manager->get_preflight_status();
 		return rest_ensure_response(
 			array(
 				'cloud'     => $this->cloud_service->get_status(),
-				'preflight' => $this->backup_manager->get_preflight_status(),
+				'preflight' => $preflight,
+				'health'    => array(
+					'ready'          => ! empty( $preflight['ready'] ),
+					'cron_available' => empty( $preflight['wp_cron_disabled'] ),
+				),
+				'summary'   => $this->backup_manager->get_summary(),
+				'schedule'  => array(
+					'enabled'   => ! empty( $settings['schedule_enabled'] ),
+					'frequency' => $settings['schedule'],
+					'time'      => $settings['schedule_time'],
+					'timezone'  => wp_timezone_string(),
+					'next_run'  => $next_scheduled ? gmdate( 'c', $next_scheduled ) : null,
+				),
 				'backups'   => $this->backup_manager->list_backups(),
-				'jobs'      => array_values( $this->backup_manager->list_jobs() ),
+				'jobs'      => $this->get_all_activity(),
 			)
 		);
 	}
@@ -253,7 +328,8 @@ class ZoeCloud_REST_Controller {
 		$result = $this->backup_manager->enqueue_backup(
 			array(
 				'include_core' => (bool) $request->get_param( 'include_core' ),
-				'upload_drive' => (bool) $request->get_param( 'upload_drive' ),
+				'upload_cloud' => (bool) ( $request->get_param( 'upload_cloud' ) ?? $request->get_param( 'upload_drive' ) ),
+				'source'       => 'manual',
 			)
 		);
 
@@ -285,6 +361,33 @@ class ZoeCloud_REST_Controller {
 	}
 
 	/**
+	 * Update lock metadata for one backup.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function update_backup( WP_REST_Request $request ) {
+		$result = $this->backup_manager->update_backup( sanitize_text_field( (string) $request['id'] ), (bool) $request->get_param( 'locked' ) );
+		return is_wp_error( $result ) ? $result : rest_ensure_response( $result );
+	}
+
+	/**
+	 * Delete a selection of backups.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response
+	 */
+	public function bulk_delete_backups( WP_REST_Request $request ) {
+		return rest_ensure_response( $this->backup_manager->bulk_delete_backups( (array) $request->get_param( 'ids' ) ) );
+	}
+
+	/** Test the configured cloud destination. */
+	public function test_storage() {
+		$result = $this->cloud_service->test_connection();
+		return is_wp_error( $result ) ? $result : rest_ensure_response( $result );
+	}
+
+	/**
 	 * List jobs.
 	 *
 	 * @return WP_REST_Response
@@ -301,12 +404,232 @@ class ZoeCloud_REST_Controller {
 	 */
 	public function get_job( WP_REST_Request $request ) {
 		$job = $this->backup_manager->get_job( sanitize_key( (string) $request['id'] ) );
+		if ( empty( $job ) ) {
+			$restore_jobs = $this->get_restore_jobs();
+			$job          = $restore_jobs[ sanitize_key( (string) $request['id'] ) ] ?? null;
+		}
 
 		if ( empty( $job ) ) {
 			return new WP_Error( 'zoecloud_job_missing', __( 'Job not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
 		}
 
 		return rest_ensure_response( $job );
+	}
+
+	/** Return backup and restore activity ordered newest first. */
+	public function list_activity() {
+		return rest_ensure_response( $this->get_all_activity() );
+	}
+
+	/**
+	 * Download a plain-text activity log.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return void|WP_Error
+	 */
+	public function download_activity( WP_REST_Request $request ) {
+		$id  = sanitize_key( (string) $request['id'] );
+		$job = current(
+			array_filter(
+				$this->get_all_activity(),
+				static function ( $item ) use ( $id ) {
+					return ( $item['id'] ?? '' ) === $id;
+				}
+			)
+		);
+		if ( ! $job ) {
+			return new WP_Error( 'zoecloud_job_missing', __( 'Job not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		}
+		$lines = array( 'ZoeCloud ' . ( $job['type'] ?? 'job' ) . ' ' . $id );
+		foreach ( (array) ( $job['events'] ?? array() ) as $event ) {
+			$lines[] = sprintf( '[%1$s] %2$s/%3$s: %4$s', $event['time'] ?? '', $event['stage'] ?? '', $event['status'] ?? '', $event['message'] ?? '' );
+		}
+		nocache_headers();
+		header( 'Content-Type: text/plain; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename="zoecloud-' . $id . '.log"' );
+		echo esc_html( implode( "\n", $lines ) );
+		exit;
+	}
+
+	/**
+	 * Queue a protected asynchronous restore.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function create_restore_job( WP_REST_Request $request ) {
+		$hostname = sanitize_text_field( (string) $request->get_param( 'hostname' ) );
+		$current  = (string) wp_parse_url( home_url(), PHP_URL_HOST );
+		if ( ! hash_equals( strtolower( $current ), strtolower( $hostname ) ) ) {
+			return new WP_Error( 'zoecloud_restore_hostname_mismatch', __( 'Type the current site hostname to confirm the restore.', 'zoe-cloud' ), array( 'status' => 400 ) );
+		}
+
+		$filename = sanitize_file_name( (string) $request->get_param( 'filename' ) );
+		$path     = $this->backup_manager->get_backup_path( $filename );
+		$plan     = $this->restore_manager->get_restore_plan( $path );
+		if ( is_wp_error( $plan ) ) {
+			return $plan;
+		}
+
+		foreach ( $this->backup_manager->list_backups() as $backup ) {
+			if ( ( $backup['filename'] ?? '' ) !== $filename || empty( $backup['checksum'] ) ) {
+				continue;
+			}
+			if ( ! file_exists( $path ) || ! hash_equals( $backup['checksum'], hash_file( 'sha256', $path ) ) ) {
+				return new WP_Error( 'zoecloud_restore_checksum_mismatch', __( 'Backup integrity verification failed. Restore was stopped.', 'zoe-cloud' ), array( 'status' => 409 ) );
+			}
+			break;
+		}
+
+		$id          = wp_generate_uuid4();
+		$now         = current_time( 'mysql', true );
+		$job         = array(
+			'id'         => $id,
+			'type'       => 'restore',
+			'status'     => 'queued',
+			'stage'      => 'preflight',
+			'progress'   => 0,
+			'message'    => __( 'Restore queued.', 'zoe-cloud' ),
+			'created_at' => $now,
+			'updated_at' => $now,
+			'args'       => array(
+				'filename'      => $filename,
+				'search'        => esc_url_raw( (string) $request->get_param( 'search' ) ),
+				'replace'       => esc_url_raw( (string) $request->get_param( 'replace' ) ),
+				'safety_backup' => false !== $request->get_param( 'safety_backup' ),
+			),
+			'events'     => array(
+				array(
+					'time'    => $now,
+					'stage'   => 'preflight',
+					'status'  => 'queued',
+					'message' => __( 'Restore queued.', 'zoe-cloud' ),
+				),
+			),
+		);
+		$jobs        = $this->get_restore_jobs();
+		$jobs[ $id ] = $job;
+		$this->save_restore_jobs( $jobs );
+		wp_schedule_single_event( time() + 1, 'zoecloud_run_restore_job', array( $id ) );
+		return new WP_REST_Response( $job, 202 );
+	}
+
+	/**
+	 * Process the safety-backup and restore orchestration.
+	 *
+	 * @param string $job_id Restore job UUID.
+	 * @return void
+	 * @throws RuntimeException When a safety requirement or restore step fails.
+	 */
+	public function run_restore_job( $job_id ) {
+		$jobs = $this->get_restore_jobs();
+		if ( empty( $jobs[ $job_id ] ) || in_array( $jobs[ $job_id ]['status'], array( 'completed', 'failed' ), true ) ) {
+			return;
+		}
+		$job = $jobs[ $job_id ];
+		try {
+			if ( 'preflight' === $job['stage'] ) {
+				$path = $this->backup_manager->get_backup_path( $job['args']['filename'] );
+				$free = function_exists( 'disk_free_space' ) ? disk_free_space( dirname( $path ) ) : false;
+				if ( false !== $free && $free < ( filesize( $path ) * 2 ) ) {
+					throw new RuntimeException( __( 'Not enough free disk space to restore safely.', 'zoe-cloud' ) );
+				}
+				if ( ! empty( $job['args']['safety_backup'] ) ) {
+					$safety = $this->backup_manager->enqueue_backup(
+						array(
+							'include_core' => true,
+							'upload_cloud' => false,
+							'source'       => 'safety',
+						)
+					);
+					if ( is_wp_error( $safety ) ) {
+						throw new RuntimeException( $safety->get_error_message() ); }
+					$job['safety_job_id'] = $safety['id'];
+					$this->advance_restore_job( $job, 'waiting_safety', 10, __( 'Creating a safety backup before restore.', 'zoe-cloud' ) );
+				} else {
+					$this->advance_restore_job( $job, 'restoring', 35, __( 'Restore preflight passed.', 'zoe-cloud' ) );
+				}
+			} elseif ( 'waiting_safety' === $job['stage'] ) {
+				$safety = $this->backup_manager->get_job( $job['safety_job_id'] ?? '' );
+				if ( ! $safety || 'failed' === $safety['status'] ) {
+					throw new RuntimeException( __( 'The safety backup failed; restore was stopped.', 'zoe-cloud' ) ); }
+				if ( 'completed' !== $safety['status'] ) {
+					wp_schedule_single_event( time() + 5, 'zoecloud_run_restore_job', array( $job_id ) );
+					return;
+				}
+				$this->advance_restore_job( $job, 'restoring', 35, __( 'Safety backup completed. Restoring site.', 'zoe-cloud' ) );
+			} else {
+				$result = $this->restore_manager->restore_backup( $this->backup_manager->get_backup_path( $job['args']['filename'] ), $job['args']['search'], $job['args']['replace'], true );
+				if ( is_wp_error( $result ) ) {
+					throw new RuntimeException( $result->get_error_message() ); }
+				$this->advance_restore_job( $job, 'completed', 100, __( 'Restore completed.', 'zoe-cloud' ), 'completed' );
+				return;
+			}
+			wp_schedule_single_event( time() + 1, 'zoecloud_run_restore_job', array( $job_id ) );
+		} catch ( Throwable $error ) {
+			$this->advance_restore_job( $job, 'failed', 100, sanitize_text_field( $error->getMessage() ), 'failed' );
+		}
+	}
+
+	/** Return the bounded restore job registry. */
+	private function get_restore_jobs() {
+		$jobs = get_option( 'zoecloud_restore_jobs', array() );
+		return is_array( $jobs ) ? $jobs : array();
+	}
+
+	/**
+	 * Persist recent restore jobs.
+	 *
+	 * @param array $jobs Restore jobs.
+	 * @return void
+	 */
+	private function save_restore_jobs( array $jobs ) {
+		uasort(
+			$jobs,
+			static function ( $left, $right ) {
+				return strcmp( $right['created_at'] ?? '', $left['created_at'] ?? '' );
+			}
+		);
+		update_option( 'zoecloud_restore_jobs', array_slice( $jobs, 0, 50, true ), false );
+	}
+
+	/**
+	 * Advance and log a restore job.
+	 *
+	 * @param array  $job Job record.
+	 * @param string $stage Stage key.
+	 * @param int    $progress Progress percentage.
+	 * @param string $message User-facing status.
+	 * @param string $status Job status.
+	 * @return void
+	 */
+	private function advance_restore_job( array $job, $stage, $progress, $message, $status = 'running' ) {
+		$jobs               = $this->get_restore_jobs();
+		$job['stage']       = sanitize_key( $stage );
+		$job['status']      = sanitize_key( $status );
+		$job['progress']    = absint( $progress );
+		$job['message']     = $message;
+		$job['updated_at']  = current_time( 'mysql', true );
+		$job['events'][]    = array(
+			'time'    => $job['updated_at'],
+			'stage'   => $job['stage'],
+			'status'  => $job['status'],
+			'message' => sanitize_text_field( $message ),
+		);
+		$jobs[ $job['id'] ] = $job;
+		$this->save_restore_jobs( $jobs );
+	}
+
+	/** Return merged backup and restore activity. */
+	private function get_all_activity() {
+		$jobs = array_merge( array_values( $this->backup_manager->list_jobs() ), array_values( $this->get_restore_jobs() ) );
+		usort(
+			$jobs,
+			static function ( $left, $right ) {
+				return strcmp( $right['created_at'] ?? '', $left['created_at'] ?? '' );
+			}
+		);
+		return $jobs;
 	}
 
 	/**

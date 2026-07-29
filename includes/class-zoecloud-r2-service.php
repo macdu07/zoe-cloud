@@ -13,6 +13,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Handles S3-compatible cloud uploads and deletes.
  */
 class ZoeCloud_R2_Service {
+	/** Multipart chunk size (8 MiB; S3 requires at least 5 MiB). */
+	const MULTIPART_CHUNK_SIZE = 8388608;
 	/**
 	 * Option key.
 	 *
@@ -57,6 +59,47 @@ class ZoeCloud_R2_Service {
 	}
 
 	/**
+	 * Verify credentials by sending an authenticated HEAD request to the bucket.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function test_connection() {
+		$settings = $this->get_settings();
+		$provider = $this->get_provider( $settings );
+		$config   = $this->get_provider_config( $settings, $provider );
+
+		if ( ! $this->is_provider_configured( $config ) ) {
+			return new WP_Error( 'zoecloud_cloud_not_configured', __( 'Complete all required storage fields first.', 'zoe-cloud' ) );
+		}
+
+		$url      = ! empty( $config['path_style'] ) ? trailingslashit( $config['endpoint'] ) . rawurlencode( $config['bucket'] ) . '/' : trailingslashit( $config['endpoint'] );
+		$headers  = $this->build_signed_headers( $config, 'HEAD', '', '' );
+		$response = wp_remote_request(
+			$url,
+			array(
+				'method'  => 'HEAD',
+				'timeout' => 20,
+				'headers' => $headers,
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( $code < 200 || $code >= 300 ) {
+			return new WP_Error( 'zoecloud_cloud_test_failed', $this->format_cloud_error( $config, $response, __( 'connection test failed.', 'zoe-cloud' ) ) );
+		}
+
+		return array(
+			'connected' => true,
+			'provider'  => $provider,
+			'bucket'    => $config['bucket'],
+		);
+	}
+
+	/**
 	 * Upload a backup to the configured cloud provider.
 	 *
 	 * @param string $file_path Backup file path.
@@ -79,8 +122,12 @@ class ZoeCloud_R2_Service {
 
 		$filename = basename( $file_path );
 		$key      = $this->build_object_key( $config['prefix'], $manifest, $filename );
-		$body     = file_get_contents( $file_path );
 
+		if ( filesize( $file_path ) > self::MULTIPART_CHUNK_SIZE ) {
+			return $this->upload_multipart( $config, $key, $file_path, $provider, $filename );
+		}
+
+		$body = file_get_contents( $file_path );
 		if ( false === $body ) {
 			return new WP_Error( 'zoecloud_cloud_file_read_failed', __( 'Could not read the backup archive for upload.', 'zoe-cloud' ) );
 		}
@@ -118,6 +165,135 @@ class ZoeCloud_R2_Service {
 			'key'      => $key,
 			'filename' => $filename,
 			'endpoint' => $config['endpoint'],
+		);
+	}
+
+	/**
+	 * Upload a large archive with the S3-compatible multipart protocol.
+	 *
+	 * @param array  $config   Provider config.
+	 * @param string $key      Object key.
+	 * @param string $path     Local file.
+	 * @param string $provider Provider key.
+	 * @param string $filename Filename.
+	 * @return array|WP_Error
+	 */
+	private function upload_multipart( array $config, $key, $path, $provider, $filename ) {
+		$base_url = $this->build_upload_url( $config, $key );
+		$query    = 'uploads=';
+		$headers  = $this->build_signed_headers( $config, 'POST', $key, '', false, $query );
+		$created  = wp_remote_request(
+			$base_url . '?uploads',
+			array(
+				'method'  => 'POST',
+				'timeout' => 30,
+				'headers' => $headers,
+			)
+		);
+
+		if ( is_wp_error( $created ) || wp_remote_retrieve_response_code( $created ) >= 300 ) {
+			return is_wp_error( $created ) ? $created : new WP_Error( 'zoecloud_multipart_start_failed', $this->format_cloud_error( $config, $created, __( 'multipart upload could not start.', 'zoe-cloud' ) ) );
+		}
+
+		$upload_id = $this->extract_xml_value( wp_remote_retrieve_body( $created ), 'UploadId' );
+		if ( ! $upload_id ) {
+			return new WP_Error( 'zoecloud_multipart_id_missing', __( 'Cloud storage did not return a multipart upload ID.', 'zoe-cloud' ) );
+		}
+
+		$handle = fopen( $path, 'rb' );
+		$parts  = array();
+		$number = 1;
+		$error  = null;
+
+		if ( false === $handle ) {
+			$error = new WP_Error( 'zoecloud_cloud_file_read_failed', __( 'Could not read the backup archive for upload.', 'zoe-cloud' ) );
+		} else {
+			while ( ! feof( $handle ) ) {
+				$chunk = fread( $handle, self::MULTIPART_CHUNK_SIZE );
+				if ( false === $chunk || '' === $chunk ) {
+					break;
+				}
+				$query    = 'partNumber=' . $number . '&uploadId=' . rawurlencode( $upload_id );
+				$headers  = $this->build_signed_headers( $config, 'PUT', $key, $chunk, false, $query, 'application/octet-stream' );
+				$response = wp_remote_request(
+					$base_url . '?' . $query,
+					array(
+						'method'  => 'PUT',
+						'timeout' => 120,
+						'headers' => $headers,
+						'body'    => $chunk,
+					)
+				);
+				$code     = is_wp_error( $response ) ? 0 : wp_remote_retrieve_response_code( $response );
+				if ( is_wp_error( $response ) || $code < 200 || $code >= 300 ) {
+					$error = is_wp_error( $response ) ? $response : new WP_Error( 'zoecloud_multipart_part_failed', $this->format_cloud_error( $config, $response, __( 'multipart part failed.', 'zoe-cloud' ) ) );
+					break;
+				}
+				$parts[] = array(
+					'number' => $number,
+					'etag'   => trim( (string) wp_remote_retrieve_header( $response, 'etag' ), '"' ),
+				);
+				++$number;
+			}
+			fclose( $handle );
+		}
+
+		if ( $error ) {
+			$this->abort_multipart( $config, $key, $base_url, $upload_id );
+			return $error;
+		}
+
+		$xml = '<CompleteMultipartUpload>';
+		foreach ( $parts as $part ) {
+			$xml .= '<Part><PartNumber>' . absint( $part['number'] ) . '</PartNumber><ETag>"' . esc_html( $part['etag'] ) . '"</ETag></Part>';
+		}
+		$xml     .= '</CompleteMultipartUpload>';
+		$query    = 'uploadId=' . rawurlencode( $upload_id );
+		$headers  = $this->build_signed_headers( $config, 'POST', $key, $xml, false, $query, 'application/xml' );
+		$complete = wp_remote_request(
+			$base_url . '?' . $query,
+			array(
+				'method'  => 'POST',
+				'timeout' => 120,
+				'headers' => $headers,
+				'body'    => $xml,
+			)
+		);
+
+		if ( is_wp_error( $complete ) || wp_remote_retrieve_response_code( $complete ) >= 300 ) {
+			$this->abort_multipart( $config, $key, $base_url, $upload_id );
+			return is_wp_error( $complete ) ? $complete : new WP_Error( 'zoecloud_multipart_complete_failed', $this->format_cloud_error( $config, $complete, __( 'multipart upload could not complete.', 'zoe-cloud' ) ) );
+		}
+
+		return array(
+			'provider'  => $provider,
+			'bucket'    => $config['bucket'],
+			'key'       => $key,
+			'filename'  => $filename,
+			'endpoint'  => $config['endpoint'],
+			'multipart' => true,
+		);
+	}
+
+	/**
+	 * Abort an incomplete multipart upload.
+	 *
+	 * @param array  $config    Provider config.
+	 * @param string $key       Object key.
+	 * @param string $base_url  Object URL.
+	 * @param string $upload_id Multipart upload ID.
+	 * @return void
+	 */
+	private function abort_multipart( array $config, $key, $base_url, $upload_id ) {
+		$query   = 'uploadId=' . rawurlencode( $upload_id );
+		$headers = $this->build_signed_headers( $config, 'DELETE', $key, '', false, $query );
+		wp_remote_request(
+			$base_url . '?' . $query,
+			array(
+				'method'  => 'DELETE',
+				'timeout' => 20,
+				'headers' => $headers,
+			)
 		);
 	}
 
@@ -329,18 +505,21 @@ class ZoeCloud_R2_Service {
 	 * @param string $key      Object key.
 	 * @param string $body     Request body.
 	 * @param bool   $unsigned Whether to use S3's unsigned payload marker.
+	 * @param string $query    Canonical query string.
+	 * @param string $content_type Optional body content type.
 	 * @return array
 	 */
-	private function build_signed_headers( array $config, $method, $key, $body, $unsigned = false ) {
-		$timestamp     = gmdate( 'Ymd\THis\Z' );
-		$date          = gmdate( 'Ymd' );
-		$region        = $config['region'];
-		$service       = 's3';
-		$host          = wp_parse_url( $config['endpoint'], PHP_URL_HOST );
-		$payload_hash  = $unsigned ? 'UNSIGNED-PAYLOAD' : hash( 'sha256', $body );
-		$canonical_uri = ! empty( $config['path_style'] )
+	private function build_signed_headers( array $config, $method, $key, $body, $unsigned = false, $query = '', $content_type = '' ) {
+		$timestamp       = gmdate( 'Ymd\THis\Z' );
+		$date            = gmdate( 'Ymd' );
+		$region          = $config['region'];
+		$service         = 's3';
+		$host            = wp_parse_url( $config['endpoint'], PHP_URL_HOST );
+		$payload_hash    = $unsigned ? 'UNSIGNED-PAYLOAD' : hash( 'sha256', $body );
+		$canonical_uri   = ! empty( $config['path_style'] )
 			? '/' . rawurlencode( $config['bucket'] ) . '/' . $this->encode_key_path( $key )
 			: '/' . $this->encode_key_path( $key );
+		$canonical_query = $this->canonicalize_query( $query );
 
 		$headers = array(
 			'host'                 => $host,
@@ -351,7 +530,7 @@ class ZoeCloud_R2_Service {
 		// Only include content-type for requests that carry a body; omitting it for
 		// DELETE avoids a SignatureDoesNotMatch because AWS won't see that header.
 		if ( '' !== $body ) {
-			$headers['content-type'] = 'application/zip';
+			$headers['content-type'] = $content_type ? $content_type : 'application/zip';
 		}
 
 		ksort( $headers );
@@ -368,7 +547,7 @@ class ZoeCloud_R2_Service {
 			array(
 				$method,
 				$canonical_uri,
-				'',
+				$canonical_query,
 				$canonical_headers,
 				$signed_headers,
 				$payload_hash,
@@ -398,6 +577,29 @@ class ZoeCloud_R2_Service {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Canonicalize an AWS query string.
+	 *
+	 * @param string $query Query string.
+	 * @return string
+	 */
+	private function canonicalize_query( $query ) {
+		if ( '' === $query ) {
+			return '';
+		}
+		$pairs = array();
+		foreach ( explode( '&', $query ) as $part ) {
+			list( $key, $value )                           = array_pad( explode( '=', $part, 2 ), 2, '' );
+			$pairs[ rawurlencode( rawurldecode( $key ) ) ] = rawurlencode( rawurldecode( $value ) );
+		}
+		ksort( $pairs );
+		$built = array();
+		foreach ( $pairs as $key => $value ) {
+			$built[] = $key . '=' . $value;
+		}
+		return implode( '&', $built );
 	}
 
 	/**

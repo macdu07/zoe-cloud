@@ -26,6 +26,7 @@ class ZoeCloud_Plugin {
 	 * @return void
 	 */
 	public function boot() {
+		$this->maybe_upgrade_settings();
 		$crypto               = new ZoeCloud_Crypto();
 		$r2_service           = new ZoeCloud_R2_Service( $crypto );
 		$this->backup_manager = new ZoeCloud_Backup_Manager( $r2_service );
@@ -36,11 +37,39 @@ class ZoeCloud_Plugin {
 		add_action( 'rest_api_init', array( $rest_controller, 'register_routes' ) );
 		add_action( 'zoecloud_run_scheduled_backup', array( $this->backup_manager, 'run_scheduled_backup' ) );
 		add_action( 'zoecloud_run_backup_job', array( $this->backup_manager, 'run_backup_job' ) );
+		add_action( 'zoecloud_run_restore_job', array( $rest_controller, 'run_restore_job' ) );
 		add_action( 'admin_post_zoecloud_download_backup', array( $this->backup_manager, 'stream_backup_download' ) );
 		add_action( 'update_option_zoecloud_settings', array( $this, 'sync_schedule' ), 10, 2 );
 		add_filter( 'cron_schedules', array( $this, 'register_cron_schedules' ) );
 
 		$admin->hooks();
+	}
+
+	/**
+	 * Add v0.2 settings without changing existing automation behavior.
+	 *
+	 * @return void
+	 */
+	private function maybe_upgrade_settings() {
+		$settings = get_option( 'zoecloud_settings', array() );
+
+		if ( ! is_array( $settings ) ) {
+			return;
+		}
+
+		$changed = false;
+		if ( ! array_key_exists( 'schedule_enabled', $settings ) ) {
+			$settings['schedule_enabled'] = wp_next_scheduled( 'zoecloud_run_scheduled_backup' ) ? 1 : 0;
+			$changed                      = true;
+		}
+		if ( ! array_key_exists( 'auto_upload_cloud', $settings ) && array_key_exists( 'auto_upload_drive', $settings ) ) {
+			$settings['auto_upload_cloud'] = ! empty( $settings['auto_upload_drive'] ) ? 1 : 0;
+			unset( $settings['auto_upload_drive'] );
+			$changed = true;
+		}
+		if ( $changed ) {
+			update_option( 'zoecloud_settings', $settings, false );
+		}
 	}
 
 	/**
@@ -65,6 +94,7 @@ class ZoeCloud_Plugin {
 	 */
 	public static function activate() {
 		$defaults = array(
+			'schedule_enabled'     => 0,
 			'storage_provider'     => 'r2',
 			'r2_account_id'        => '',
 			'r2_access_key_id'     => '',
@@ -80,7 +110,7 @@ class ZoeCloud_Plugin {
 			'schedule'             => 'daily',
 			'schedule_time'        => '02:00',
 			'schedule_weekday'     => 'monday',
-			'auto_upload_drive'    => 1,
+			'auto_upload_cloud'    => 1,
 			'excluded_paths'       => array(),
 		);
 
@@ -88,9 +118,7 @@ class ZoeCloud_Plugin {
 			add_option( 'zoecloud_settings', $defaults, '', false );
 		}
 
-		if ( ! wp_next_scheduled( 'zoecloud_run_scheduled_backup' ) ) {
-			wp_schedule_event( self::get_next_schedule_timestamp( $defaults ), 'daily', 'zoecloud_run_scheduled_backup' );
-		}
+		// New installations opt in to automation from the guided setup.
 	}
 
 	/**
@@ -99,11 +127,9 @@ class ZoeCloud_Plugin {
 	 * @return void
 	 */
 	public static function deactivate() {
-		$timestamp = wp_next_scheduled( 'zoecloud_run_scheduled_backup' );
-
-		if ( $timestamp ) {
-			wp_unschedule_event( $timestamp, 'zoecloud_run_scheduled_backup' );
-		}
+		wp_clear_scheduled_hook( 'zoecloud_run_scheduled_backup' );
+		wp_clear_scheduled_hook( 'zoecloud_run_backup_job' );
+		wp_clear_scheduled_hook( 'zoecloud_run_restore_job' );
 	}
 
 	/**
@@ -114,6 +140,8 @@ class ZoeCloud_Plugin {
 	 * @return void
 	 */
 	public function sync_schedule( $old_value, $value ) {
+		$old_enabled  = ! empty( $old_value['schedule_enabled'] );
+		$new_enabled  = ! empty( $value['schedule_enabled'] );
 		$old_schedule = $old_value['schedule'] ?? 'daily';
 		$new_schedule = $value['schedule'] ?? 'daily';
 		$old_time     = $old_value['schedule_time'] ?? '02:00';
@@ -121,17 +149,15 @@ class ZoeCloud_Plugin {
 		$old_weekday  = $old_value['schedule_weekday'] ?? 'monday';
 		$new_weekday  = $value['schedule_weekday'] ?? 'monday';
 
-		if ( $old_schedule === $new_schedule && $old_time === $new_time && $old_weekday === $new_weekday ) {
+		if ( $old_enabled === $new_enabled && $old_schedule === $new_schedule && $old_time === $new_time && $old_weekday === $new_weekday ) {
 			return;
 		}
 
-		$timestamp = wp_next_scheduled( 'zoecloud_run_scheduled_backup' );
+		wp_clear_scheduled_hook( 'zoecloud_run_scheduled_backup' );
 
-		if ( $timestamp ) {
-			wp_unschedule_event( $timestamp, 'zoecloud_run_scheduled_backup' );
+		if ( $new_enabled ) {
+			wp_schedule_event( self::get_next_schedule_timestamp( $value ), $new_schedule, 'zoecloud_run_scheduled_backup' );
 		}
-
-		wp_schedule_event( self::get_next_schedule_timestamp( $value ), $new_schedule, 'zoecloud_run_scheduled_backup' );
 	}
 
 	/**

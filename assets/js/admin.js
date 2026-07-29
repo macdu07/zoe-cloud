@@ -1,639 +1,252 @@
 ( function () {
-	const state = {
-		table: document.getElementById( 'zoecloud-backups-table' ),
-		statusText: document.getElementById( 'zoecloud-status-text' ),
-		feedback: document.getElementById( 'zoecloud-feedback' ),
-		jobStatus: document.getElementById( 'zoecloud-job-status' ),
-		preflight: document.getElementById( 'zoecloud-preflight' ),
-		createButton: document.getElementById( 'zoecloud-create-backup' ),
-		includeCore: document.getElementById( 'zoecloud-include-core' ),
-		uploadCloud: document.getElementById( 'zoecloud-upload-drive' ),
-		restoreFilename: document.getElementById( 'zoecloud-restore-filename' ),
-		restoreSearch: document.getElementById( 'zoecloud-restore-search' ),
-		restoreReplace: document.getElementById( 'zoecloud-restore-replace' ),
-		validateRestore: document.getElementById( 'zoecloud-validate-restore' ),
-		runRestore: document.getElementById( 'zoecloud-run-restore' ),
-		restoreFeedback: document.getElementById( 'zoecloud-restore-feedback' ),
-		tabs: document.querySelectorAll( '[data-zoecloud-tab]' ),
-		tabPanels: document.querySelectorAll( '[data-zoecloud-panel]' ),
-		scheduleSelect: document.getElementById( 'zoecloud_schedule' ),
-		scheduleWeekdayRow: document.getElementById( 'zoecloud_schedule_weekday_row' ),
-		storageProvider: document.getElementById( 'zoecloud_storage_provider' ),
-		providerFields: document.querySelectorAll( '[data-zoecloud-provider-fields]' ),
-		restoreModeBtns: document.querySelectorAll( '[data-zoecloud-restore-mode]' ),
-		restorePanels: document.querySelectorAll( '[data-zoecloud-restore-panel]' ),
-		uploadFileInput: document.getElementById( 'zoecloud-upload-file' ),
-		uploadZipButton: document.getElementById( 'zoecloud-upload-zip' ),
-		uploadFeedback: document.getElementById( 'zoecloud-upload-feedback' ),
-		uploadFilename: document.getElementById( 'zoecloud-upload-filename' ),
-		uploadArea: document.getElementById( 'zoecloud-upload-area' ),
-		restoreMode: 'existing',
-		currentTempKey: '',
-		jobStatusTimer: null,
-		keepFinalJobStatus: false,
-	};
+	'use strict';
 
-	if ( ! state.table || ! window.zoecloudAdmin ) {
+	if ( ! window.zoecloudAdmin ) {
 		return;
 	}
 
-	/**
-	 * Build a full REST API URL, handling both pretty and non-pretty
-	 * permalink modes. When WordPress uses index.php?rest_route=... the
-	 * root URL already contains a "?" so any extra query parameters must
-	 * be appended with "&" rather than "?". Using the URL API ensures
-	 * searchParams are always correctly encoded and separated.
-	 *
-	 * @param {string} path Relative path, optionally including a "?" query string.
-	 * @returns {string}
-	 */
-	const buildUrl = ( path ) => {
-		const [ endpoint, queryString ] = path.split( '?' );
-		const url = new URL( zoecloudAdmin.root + endpoint );
+	const config = window.zoecloudAdmin;
+	const t = ( key, fallback = '' ) => config.i18n?.[ key ] || fallback;
+	const $ = ( selector, root = document ) => root.querySelector( selector );
+	const $$ = ( selector, root = document ) => Array.from( root.querySelectorAll( selector ) );
+	const state = { status: null, backups: [], activity: [], selected: new Set(), restoreFilename: '', polling: null };
 
-		if ( queryString ) {
-			new URLSearchParams( queryString ).forEach( ( value, key ) => {
-				url.searchParams.append( key, value );
-			} );
+	const escapeHtml = ( value ) => String( value ?? '' ).replace( /[&<>"']/g, ( char ) => ( { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' } )[ char ] );
+	const formatBytes = ( bytes ) => {
+		const value = Number( bytes ) || 0;
+		if ( value < 1024 ) return `${ value } B`;
+		const units = [ 'KB', 'MB', 'GB', 'TB' ];
+		let amount = value / 1024;
+		let index = 0;
+		while ( amount >= 1024 && index < units.length - 1 ) { amount /= 1024; index++; }
+		return `${ amount.toLocaleString( undefined, { maximumFractionDigits: amount >= 10 ? 0 : 1 } ) } ${ units[ index ] }`;
+	};
+	const formatDate = ( value, relative = false ) => {
+		if ( ! value ) return '—';
+		const normalized = /Z$|[+-]\d\d:\d\d$/.test( value ) ? value : `${ value.replace( ' ', 'T' ) }Z`;
+		const date = new Date( normalized );
+		if ( Number.isNaN( date.getTime() ) ) return value;
+		if ( relative ) {
+			const minutes = Math.round( ( date.getTime() - Date.now() ) / 60000 );
+			if ( Math.abs( minutes ) < 60 ) return new Intl.RelativeTimeFormat( undefined, { numeric: 'auto' } ).format( minutes, 'minute' );
+			const hours = Math.round( minutes / 60 );
+			if ( Math.abs( hours ) < 48 ) return new Intl.RelativeTimeFormat( undefined, { numeric: 'auto' } ).format( hours, 'hour' );
 		}
-
+		return new Intl.DateTimeFormat( undefined, { dateStyle: 'medium', timeStyle: 'short' } ).format( date );
+	};
+	const buildUrl = ( path ) => {
+		const [ endpoint, query ] = path.split( '?' );
+		const url = new URL( config.root + endpoint );
+		if ( query ) new URLSearchParams( query ).forEach( ( value, key ) => url.searchParams.append( key, value ) );
 		return url.toString();
 	};
-
 	const request = async ( path, options = {} ) => {
 		const response = await fetch( buildUrl( path ), {
 			method: options.method || 'GET',
-			headers: {
-				'Content-Type': 'application/json',
-				'X-WP-Nonce': zoecloudAdmin.nonce,
-			},
+			headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': config.nonce, ...( options.headers || {} ) },
 			body: options.body ? JSON.stringify( options.body ) : undefined,
 		} );
-
 		const data = await response.json().catch( () => ( {} ) );
-
-		if ( ! response.ok ) {
-			throw new Error( data.message || 'Request failed' );
-		}
-
+		if ( ! response.ok ) throw new Error( data.message || t( 'unknownError', 'Request failed.' ) );
 		return data;
 	};
-
-	const escapeHtml = ( value ) => String( value ?? '' ).replace(
-		/[&<>"']/g,
-		( char ) => ( {
-			'&': '&amp;',
-			'<': '&lt;',
-			'>': '&gt;',
-			'"': '&quot;',
-			"'": '&#039;',
-		} )[ char ]
-	);
-
-	const renderBackups = ( backups ) => {
-		if ( ! backups.length ) {
-			state.table.innerHTML = '<tr><td colspan="5">No backups yet.</td></tr>';
-			if ( state.restoreFilename ) {
-				state.restoreFilename.innerHTML = '<option value="">No backups available</option>';
-			}
-			return;
-		}
-
-		state.table.innerHTML = backups
-			.map( ( backup ) => {
-				const filename = backup.filename || '';
-				const backupId = backup.id || filename;
-				const downloadUrl = buildUrl( 'backup-file?filename=' + encodeURIComponent( filename ) + '&_wpnonce=' + encodeURIComponent( zoecloudAdmin.nonce ) );
-
-				return `
-					<tr>
-						<td>${ escapeHtml( backup.created_at || '' ) }</td>
-						<td>${ escapeHtml( filename ) }</td>
-						<td>${ formatBytes( backup.size || 0 ) }</td>
-						<td>${ escapeHtml( renderCloudStatus( backup ) ) }</td>
-						<td>
-							<a class="button" href="${ escapeHtml( downloadUrl ) }">Download</a>
-							<button type="button" class="button zoecloud-select-restore" data-filename="${ escapeHtml( filename ) }">Select</button>
-							<button type="button" class="button zoecloud-delete-backup" data-id="${ escapeHtml( backupId ) }" data-filename="${ escapeHtml( filename ) }">Delete</button>
-						</td>
-					</tr>
-				`;
-			} )
-			.join( '' );
-
-		if ( state.restoreFilename ) {
-			const currentValue = state.restoreFilename.value;
-			state.restoreFilename.innerHTML = backups
-				.map( ( backup ) => `<option value="${ escapeHtml( backup.filename || '' ) }">${ escapeHtml( backup.filename || '' ) }</option>` )
-				.join( '' );
-
-			if ( currentValue ) {
-				state.restoreFilename.value = currentValue;
-			}
-		}
+	const feedback = ( selector, message, error = false ) => {
+		const node = $( selector );
+		if ( ! node ) return;
+		node.textContent = message;
+		node.classList.toggle( 'is-error', error );
+		node.classList.toggle( 'is-success', ! error && !! message );
 	};
 
-	const formatBytes = ( bytes ) => {
-		if ( ! bytes ) {
-			return '0 B';
-		}
-
-		const units = [ 'B', 'KB', 'MB', 'GB' ];
-		let value = Number( bytes );
-		let unitIndex = 0;
-
-		while ( value >= 1024 && unitIndex < units.length - 1 ) {
-			value = value / 1024;
-			unitIndex++;
-		}
-
-		return `${ value.toFixed( value >= 10 || unitIndex === 0 ? 0 : 1 ) } ${ units[ unitIndex ] }`;
+	const activateTab = ( name, updateHash = true ) => {
+		const active = $( `[data-zoecloud-tab="${ name }"]` );
+		if ( ! active ) return;
+		$$( '[data-zoecloud-tab]' ).forEach( ( tab ) => {
+			const selected = tab === active;
+			tab.classList.toggle( 'is-active', selected );
+			tab.setAttribute( 'aria-selected', selected ? 'true' : 'false' );
+			tab.tabIndex = selected ? 0 : -1;
+		} );
+		$$( '[data-zoecloud-panel]' ).forEach( ( panel ) => {
+			const selected = panel.dataset.zoecloudPanel === name;
+			panel.classList.toggle( 'is-active', selected );
+			panel.hidden = ! selected;
+		} );
+		if ( updateHash ) history.replaceState( null, '', `#${ name }` );
 	};
+	$$( '[data-zoecloud-tab]' ).forEach( ( tab, index, tabs ) => {
+		tab.addEventListener( 'click', () => activateTab( tab.dataset.zoecloudTab ) );
+		tab.addEventListener( 'keydown', ( event ) => {
+			if ( ! [ 'ArrowLeft', 'ArrowRight', 'Home', 'End' ].includes( event.key ) ) return;
+			event.preventDefault();
+			let next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : ( index + ( event.key === 'ArrowRight' ? 1 : -1 ) + tabs.length ) % tabs.length;
+			tabs[ next ].focus(); activateTab( tabs[ next ].dataset.zoecloudTab );
+		} );
+	} );
+	$$( '[data-zoecloud-go]' ).forEach( ( button ) => button.addEventListener( 'click', () => activateTab( button.dataset.zoecloudGo ) ) );
+	if ( [ 'overview', 'backups', 'automation', 'storage', 'activity' ].includes( location.hash.slice( 1 ) ) ) activateTab( location.hash.slice( 1 ), false );
 
-	const renderCloudStatus = ( backup ) => {
-		if ( backup.cloud && backup.cloud.provider ) {
-			return `Uploaded to ${ backup.cloud.provider.toUpperCase() }`;
-		}
-
-		if ( backup.cloud_error ) {
-			return backup.cloud_error;
-		}
-
-		return 'Pending';
-	};
-
-	const renderPreflight = ( preflight ) => {
-		if ( ! state.preflight || ! preflight ) {
-			return;
-		}
-
+	const renderPreflight = ( checks ) => {
 		const rows = [
-			[ 'ZipArchive', preflight.ziparchive ],
-			[ 'Uploads writable', preflight.uploads_writable ],
-			[ 'Can create backup files', preflight.can_create_files ],
-			[ 'Free disk', preflight.disk_free_bytes === null ? 'Unknown' : formatBytes( preflight.disk_free_bytes ) ],
-			[ 'Memory limit', preflight.memory_limit || 'Unknown' ],
-			[ 'Max execution time', preflight.max_execution_time || 'Unknown' ],
-			[ 'WP-Cron disabled', preflight.wp_cron_disabled ? 'Yes' : 'No' ],
+			[ t( 'zipArchive', 'ZipArchive' ), checks.ziparchive ], [ t( 'uploadsWritable', 'Uploads writable' ), checks.uploads_writable ], [ t( 'backupWritable', 'Backup files writable' ), checks.can_create_files ],
+			[ t( 'freeDisk', 'Free disk' ), checks.disk_free_bytes === null ? '—' : formatBytes( checks.disk_free_bytes ) ], [ t( 'memory', 'Memory' ), checks.memory_limit || '—' ],
+			[ t( 'executionTime', 'Execution time' ), checks.max_execution_time || '—' ], [ t( 'cron', 'WP-Cron' ), checks.wp_cron_disabled ? t( 'disabled', 'Disabled' ) : t( 'available', 'Available' ) ],
 		];
-
-		state.preflight.innerHTML = rows
-			.map( ( [ label, value ] ) => `<li class="${ value === false ? 'is-error' : '' }"><strong>${ escapeHtml( label ) }:</strong> ${ escapeHtml( value === true ? 'OK' : value === false ? 'Missing' : value ) }</li>` )
-			.join( '' );
-
-		if ( state.createButton ) {
-			state.createButton.disabled = ! preflight.ready;
-		}
+		const list = $( '#zoecloud-preflight' );
+		if ( list ) list.innerHTML = rows.map( ( [ label, value ] ) => `<li class="${ value === false || value === t( 'disabled', 'Disabled' ) ? 'is-error' : '' }"><span>${ escapeHtml( label ) }</span><strong>${ escapeHtml( value === true ? 'OK' : value === false ? t( 'missing', 'Missing' ) : value ) }</strong></li>` ).join( '' );
+		$( '#zoecloud-health-summary' ).textContent = checks.ready ? t( 'healthReady', 'Ready to create backups.' ) : t( 'healthBlocked', 'Action is required before backups can run.' );
+	};
+	const renderSummary = ( data ) => {
+		const summary = data.summary || {};
+		const latest = summary.latest_backup;
+		$( '#zoecloud-summary-latest' ).textContent = latest ? formatDate( latest.created_at, true ) : t( 'never', 'Never' );
+		$( '#zoecloud-summary-latest-detail' ).textContent = latest ? `${ formatBytes( latest.size ) } · ${ latest.scope === 'full' ? t( 'fullSite', 'Full site' ) : t( 'siteData', 'Site data' ) }` : t( 'createFirst', 'Create your first recovery point.' );
+		$( '#zoecloud-summary-next' ).textContent = data.schedule?.enabled && data.schedule.next_run ? formatDate( data.schedule.next_run, true ) : t( 'notScheduled', 'Not scheduled' );
+		$( '#zoecloud-summary-timezone' ).textContent = data.schedule?.enabled ? `${ formatDate( data.schedule.next_run ) } · ${ data.schedule.timezone }` : t( 'enableAutomation', 'Enable automation to stay protected.' );
+		$( '#zoecloud-summary-storage' ).textContent = data.cloud?.configured ? data.cloud.label : t( 'localOnly', 'Local only' );
+		$( '#zoecloud-summary-storage-detail' ).textContent = data.cloud?.configured ? data.cloud.bucket : t( 'connectStorage', 'Connect off-site storage.' );
+		$( '#zoecloud-summary-health' ).textContent = data.health?.ready ? t( 'ready', 'Ready' ) : t( 'attention', 'Needs attention' );
+		$( '#zoecloud-summary-health-detail' ).textContent = data.health?.cron_available ? t( 'cronAvailable', 'Background tasks available' ) : t( 'cronDisabled', 'WP-Cron is disabled' );
+		$( '#zoecloud-metric-count' ).textContent = summary.backup_count || 0;
+		$( '#zoecloud-metric-size' ).textContent = formatBytes( summary.local_total_bytes );
+		$( '#zoecloud-metric-activity' ).textContent = summary.latest_job ? formatDate( summary.latest_job.updated_at, true ) : '—';
+		const protectedState = latest && data.health?.ready;
+		const global = $( '#zoecloud-global-status' );
+		global.textContent = protectedState ? t( 'protected', 'Protected' ) : t( 'setupNeeded', 'Setup needed' );
+		global.classList.toggle( 'is-ready', !! protectedState );
+		$( '#zoecloud-cloud-hint' ).textContent = data.cloud?.configured ? `${ data.cloud.label } · ${ data.cloud.bucket }` : t( 'localBackupHint', 'Cloud storage is not configured; this backup will remain local.' );
+		const cloudToggle = $( '#zoecloud-upload-cloud' );
+		cloudToggle.disabled = ! data.cloud?.configured;
+		cloudToggle.checked = !! data.cloud?.configured;
+		renderPreflight( data.preflight || {} );
 	};
 
-	const renderJobStatus = ( job ) => {
-		if ( ! state.jobStatus ) {
-			return;
-		}
-
-		window.clearTimeout( state.jobStatusTimer );
-		state.keepFinalJobStatus = [ 'completed', 'failed' ].includes( job.status );
-		state.jobStatus.innerHTML = `
-			<div class="zoecloud-progress">
-				<div class="zoecloud-progress-bar" style="width: ${ Math.max( 0, Math.min( 100, Number( job.progress ) || 0 ) ) }%"></div>
-			</div>
-			<p>${ escapeHtml( job.message || 'Working...' ) } ${ escapeHtml( Math.max( 0, Math.min( 100, Number( job.progress ) || 0 ) ) ) }%</p>
-		`;
+	const statusBadge = ( value, label ) => `<span class="zoecloud-badge is-${ escapeHtml( value ) }">${ escapeHtml( label ) }</span>`;
+	const filteredBackups = () => {
+		const query = ( $( '#zoecloud-backup-search' )?.value || '' ).toLowerCase();
+		const filter = $( '#zoecloud-backup-filter' )?.value || 'all';
+		return state.backups.filter( ( backup ) => {
+			const matchesSearch = `${ backup.filename } ${ backup.manifest?.domain || '' }`.toLowerCase().includes( query );
+			const matchesFilter = filter === 'all' || backup.source === filter || ( filter === 'locked' && backup.locked );
+			return matchesSearch && matchesFilter;
+		} );
+	};
+	const renderBackups = () => {
+		const table = $( '#zoecloud-backups-table' );
+		const backups = filteredBackups();
+		if ( ! backups.length ) { table.innerHTML = `<tr><td colspan="6" class="zoecloud-empty">${ escapeHtml( t( 'noBackups', 'No backups found.' ) ) }</td></tr>`; return; }
+		table.innerHTML = backups.map( ( backup ) => {
+			const id = backup.id || backup.filename;
+			const downloadUrl = buildUrl( `backup-file?filename=${ encodeURIComponent( backup.filename ) }&_wpnonce=${ encodeURIComponent( config.nonce ) }` );
+			const integrity = backup.checksum ? statusBadge( 'verified', t( 'verified', 'Verified' ) ) : statusBadge( 'unknown', t( 'notVerified', 'Not verified' ) );
+			const location = backup.cloud ? `${ statusBadge( 'cloud', backup.cloud.provider?.toUpperCase() || 'Cloud' ) } ${ statusBadge( 'local', t( 'local', 'Local' ) ) }` : statusBadge( backup.cloud_error ? 'failed' : 'local', backup.cloud_error ? t( 'uploadFailed', 'Upload failed' ) : t( 'local', 'Local' ) );
+			return `<tr data-id="${ escapeHtml( id ) }"><th class="check-column"><input type="checkbox" class="zoecloud-row-select" value="${ escapeHtml( id ) }" ${ state.selected.has( id ) ? 'checked' : '' } aria-label="${ escapeHtml( backup.filename ) }"></th><td><div class="zoecloud-backup-name"><strong>${ escapeHtml( backup.manifest?.domain || backup.filename ) }</strong>${ backup.locked ? '<span class="dashicons dashicons-lock" aria-hidden="true"></span>' : '' }<small>${ escapeHtml( formatDate( backup.created_at ) ) } · ${ escapeHtml( formatBytes( backup.size ) ) } · ${ escapeHtml( backup.scope === 'full' ? t( 'fullSite', 'Full site' ) : t( 'siteData', 'Site data' ) ) }</small></div></td><td>${ statusBadge( backup.source || 'manual', t( backup.source || 'manual', backup.source || 'manual' ) ) }</td><td>${ location }</td><td>${ integrity }</td><td><div class="zoecloud-row-actions"><a class="button" href="${ escapeHtml( downloadUrl ) }">${ escapeHtml( t( 'download', 'Download' ) ) }</a><button type="button" class="button zoecloud-restore-backup" data-filename="${ escapeHtml( backup.filename ) }">${ escapeHtml( t( 'restore', 'Restore' ) ) }</button><button type="button" class="button zoecloud-lock-backup" data-id="${ escapeHtml( id ) }" data-locked="${ backup.locked ? '1' : '0' }">${ escapeHtml( backup.locked ? t( 'unlock', 'Unlock' ) : t( 'lock', 'Lock' ) ) }</button><button type="button" class="button-link-delete zoecloud-delete-backup" data-id="${ escapeHtml( id ) }" ${ backup.locked ? 'disabled' : '' }>${ escapeHtml( t( 'delete', 'Delete' ) ) }</button></div></td></tr>`;
+		} ).join( '' );
+		$( '#zoecloud-bulk-delete' ).disabled = state.selected.size === 0;
 	};
 
-	const clearJobStatusLater = () => {
-		window.clearTimeout( state.jobStatusTimer );
-		state.jobStatusTimer = window.setTimeout( () => {
-			state.keepFinalJobStatus = false;
-			if ( state.jobStatus ) {
-				state.jobStatus.innerHTML = '';
-			}
-		}, 6000 );
+	const renderJob = ( job ) => {
+		const node = $( '#zoecloud-job-status' );
+		if ( ! job || ! node ) return;
+		node.innerHTML = `<div class="zoecloud-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${ Number( job.progress ) || 0 }"><span style="width:${ Math.min( 100, Math.max( 0, Number( job.progress ) || 0 ) ) }%"></span></div><div><strong>${ escapeHtml( job.message || t( 'loading', 'Working…' ) ) }</strong><span>${ Number( job.progress ) || 0 }%</span></div>`;
 	};
-
-	const renderJobs = ( jobs ) => {
-		if ( ! state.jobStatus ) {
-			return;
-		}
-
-		const active = ( jobs || [] ).find( ( job ) => [ 'queued', 'running' ].includes( job.status ) );
-
-		if ( ! active ) {
-			if ( state.keepFinalJobStatus ) {
+	const pollJob = async ( id, isRestore = false ) => {
+		window.clearTimeout( state.polling );
+		try {
+			let job = await request( `jobs/${ encodeURIComponent( id ) }` );
+			if ( ! isRestore && [ 'queued', 'running' ].includes( job.status ) ) job = await request( `jobs/${ encodeURIComponent( id ) }/tick`, { method: 'POST' } );
+			renderJob( job );
+			if ( [ 'completed', 'failed' ].includes( job.status ) ) {
+				feedback( isRestore ? '#zoecloud-restore-feedback' : '#zoecloud-feedback', job.message, job.status === 'failed' );
+				await refresh();
 				return;
 			}
-			window.clearTimeout( state.jobStatusTimer );
-			state.jobStatus.innerHTML = '';
-			return;
-		}
+			state.polling = window.setTimeout( () => pollJob( id, isRestore ), isRestore ? 2000 : 350 );
+		} catch ( error ) { feedback( isRestore ? '#zoecloud-restore-feedback' : '#zoecloud-feedback', error.message, true ); }
+	};
 
-		renderJobStatus( active );
+	const renderActivity = () => {
+		const filter = $( '#zoecloud-activity-filter' )?.value || 'all';
+		const jobs = state.activity.filter( ( job ) => filter === 'all' || job.type === filter || ( filter === 'failed' && job.status === 'failed' ) );
+		const table = $( '#zoecloud-activity-table' );
+		if ( ! jobs.length ) { table.innerHTML = `<tr><td colspan="5" class="zoecloud-empty">${ escapeHtml( t( 'noActivity', 'No activity yet.' ) ) }</td></tr>`; return; }
+		table.innerHTML = jobs.map( ( job ) => `<tr><td><strong>${ escapeHtml( t( job.type, job.type ) ) }</strong><small class="zoecloud-id">${ escapeHtml( job.id ) }</small></td><td>${ escapeHtml( formatDate( job.created_at ) ) }</td><td>${ statusBadge( job.status, t( job.status, job.status ) ) }</td><td><strong>${ escapeHtml( job.message || '' ) }</strong><small>${ escapeHtml( job.events?.length ? `${ job.events.length } ${ t( 'events', 'events' ) }` : '' ) }</small></td><td><a class="button" href="${ escapeHtml( buildUrl( `activity/${ encodeURIComponent( job.id ) }/download?_wpnonce=${ encodeURIComponent( config.nonce ) }` ) ) }">${ escapeHtml( t( 'downloadLog', 'Download log' ) ) }</a></td></tr>` ).join( '' );
 	};
 
 	const refresh = async () => {
-		const status = await request( 'status' );
-		const cloudLabel = status.cloud.label || ( status.cloud.provider ? status.cloud.provider.toUpperCase() : 'Cloud storage' );
-		state.statusText.textContent = status.cloud.configured
-			? `${ cloudLabel } configured for ${ status.cloud.bucket || 'bucket' }.`
-			: 'Cloud storage not configured yet. Backups will be created locally.';
-		if ( state.uploadCloud ) {
-			state.uploadCloud.checked = !! status.cloud.configured;
-			state.uploadCloud.disabled = ! status.cloud.configured;
-		}
-		renderPreflight( status.preflight );
-		renderBackups( status.backups || [] );
-		renderJobs( status.jobs || [] );
+		const data = await request( 'status' );
+		state.status = data; state.backups = data.backups || []; state.activity = data.jobs || [];
+		renderSummary( data ); renderBackups(); renderActivity();
 	};
 
-	const setFeedback = ( message, isError = false ) => {
-		state.feedback.textContent = message;
-		state.feedback.classList.toggle( 'is-error', isError );
-	};
-
-	const activateTab = ( target, updateHash = true ) => {
-		const tab = Array.from( state.tabs ).find( ( item ) => item.dataset.zoecloudTab === target );
-
-		if ( ! tab ) {
-			return;
-		}
-
-		state.tabs.forEach( ( item ) => item.classList.toggle( 'is-active', item === tab ) );
-		state.tabPanels.forEach( ( panel ) => {
-			panel.classList.toggle( 'is-active', panel.dataset.zoecloudPanel === target );
-		} );
-
-		if ( updateHash ) {
-			window.history.replaceState( null, '', `#${ target }` );
-		}
-	};
-
-	const updateProviderFields = () => {
-		const provider = state.storageProvider?.value || 'r2';
-
-		state.providerFields.forEach( ( fieldset ) => {
-			fieldset.hidden = fieldset.dataset.zoecloudProviderFields !== provider;
-		} );
-	};
-
-	const updateScheduleFields = () => {
-		if ( state.scheduleWeekdayRow ) {
-			state.scheduleWeekdayRow.hidden = state.scheduleSelect?.value !== 'weekly';
-		}
-	};
-
-	state.tabs.forEach( ( tab ) => {
-		tab.addEventListener( 'click', () => activateTab( tab.dataset.zoecloudTab ) );
-	} );
-
-	state.scheduleSelect?.addEventListener( 'change', updateScheduleFields );
-	updateScheduleFields();
-
-	state.storageProvider?.addEventListener( 'change', updateProviderFields );
-	updateProviderFields();
-
-	document.querySelectorAll( '.zoecloud-tab-panel form' ).forEach( ( form ) => {
-		form.addEventListener( 'submit', () => {
-			const referer = form.querySelector( 'input[name="_wp_http_referer"]' );
-
-			if ( referer ) {
-				referer.value = `${ window.location.pathname }${ window.location.search }${ window.location.hash }`;
-			}
-		} );
-	} );
-
-	if ( [ '#backups', '#storage' ].includes( window.location.hash ) ) {
-		activateTab( window.location.hash.slice( 1 ), false );
-	}
-
-	state.createButton?.addEventListener( 'click', async () => {
-		state.createButton.disabled = true;
-		setFeedback( 'Queueing backup…' );
-
+	$( '#zoecloud-create-backup' )?.addEventListener( 'click', async ( event ) => {
+		const button = event.currentTarget; button.disabled = true; feedback( '#zoecloud-feedback', t( 'loading', 'Queueing…' ) );
 		try {
-			const job = await request( 'backups', {
-				method: 'POST',
-				body: {
-					include_core: !! state.includeCore?.checked,
-					upload_drive: !! state.uploadCloud?.checked,
-				},
-			} );
-			setFeedback( 'Backup job queued.' );
-			await pollJob( job.id );
-		} catch ( error ) {
-			setFeedback( error.message, true );
-		} finally {
-			state.createButton.disabled = false;
-		}
+			const scope = $( 'input[name="zoecloud_scope"]:checked' )?.value || 'site_data';
+			const job = await request( 'backups', { method: 'POST', body: { include_core: scope === 'full', upload_cloud: !! $( '#zoecloud-upload-cloud' )?.checked } } );
+			feedback( '#zoecloud-feedback', t( 'backupQueued', 'Backup queued.' ) ); renderJob( job ); pollJob( job.id );
+		} catch ( error ) { feedback( '#zoecloud-feedback', error.message, true ); } finally { button.disabled = false; }
 	} );
-
-	state.table.addEventListener( 'click', ( event ) => {
-		const restoreButton = event.target.closest( '.zoecloud-select-restore' );
-		const deleteButton = event.target.closest( '.zoecloud-delete-backup' );
-
-		if ( deleteButton ) {
-			deleteBackup( deleteButton.dataset.id || '', deleteButton.dataset.filename || '' );
-			return;
-		}
-
-		if ( ! restoreButton || ! state.restoreFilename ) {
-			return;
-		}
-
-		state.restoreFilename.value = restoreButton.dataset.filename || '';
-		setRestoreFeedback( `Selected ${ state.restoreFilename.value } for restore.` );
-	} );
-
-	const pollJob = async ( jobId ) => {
-		if ( ! jobId ) {
-			return;
-		}
-
-		let keepPolling = true;
-
-		while ( keepPolling ) {
-			let job = await request( `jobs/${ encodeURIComponent( jobId ) }` );
-
-			if ( [ 'queued', 'running' ].includes( job.status ) ) {
-				job = await request( `jobs/${ encodeURIComponent( jobId ) }/tick`, {
-					method: 'POST',
-				} );
-			}
-
-			renderJobStatus( job );
-
-			if ( 'completed' === job.status ) {
-				setFeedback( job.message || 'Backup completed.' );
-				clearJobStatusLater();
-				await refresh();
-				keepPolling = false;
-			} else if ( 'failed' === job.status ) {
-				setFeedback( job.message || 'Backup failed.', true );
-				clearJobStatusLater();
-				await refresh();
-				keepPolling = false;
-			} else {
-				await new Promise( ( resolve ) => setTimeout( resolve, 250 ) );
-			}
-		}
-	};
-
-	const deleteBackup = async ( backupId, filename ) => {
-		if ( ! backupId ) {
-			return;
-		}
-
-		if ( ! window.confirm( `Delete ${ filename || 'this backup' }?` ) ) {
-			return;
-		}
-
+	[ '#zoecloud-backup-search', '#zoecloud-backup-filter' ].forEach( ( selector ) => $( selector )?.addEventListener( 'input', renderBackups ) );
+	$( '#zoecloud-select-all' )?.addEventListener( 'change', ( event ) => { filteredBackups().forEach( ( backup ) => event.target.checked ? state.selected.add( backup.id ) : state.selected.delete( backup.id ) ); renderBackups(); } );
+	$( '#zoecloud-backups-table' )?.addEventListener( 'change', ( event ) => { if ( ! event.target.matches( '.zoecloud-row-select' ) ) return; event.target.checked ? state.selected.add( event.target.value ) : state.selected.delete( event.target.value ); $( '#zoecloud-bulk-delete' ).disabled = state.selected.size === 0; } );
+	$( '#zoecloud-backups-table' )?.addEventListener( 'click', async ( event ) => {
+		const lock = event.target.closest( '.zoecloud-lock-backup' ); const remove = event.target.closest( '.zoecloud-delete-backup' ); const restore = event.target.closest( '.zoecloud-restore-backup' );
 		try {
-			await request( `backups/${ encodeURIComponent( backupId ) }`, {
-				method: 'DELETE',
-			} );
-			setFeedback( 'Backup deleted.' );
-			window.clearTimeout( state.jobStatusTimer );
-			state.keepFinalJobStatus = false;
-			if ( state.jobStatus ) {
-				state.jobStatus.innerHTML = '';
-			}
-			await refresh();
-		} catch ( error ) {
-			setFeedback( error.message, true );
-		}
+			if ( lock ) { await request( `backups/${ encodeURIComponent( lock.dataset.id ) }`, { method: 'PATCH', body: { locked: lock.dataset.locked !== '1' } } ); await refresh(); }
+			if ( remove ) { state.selected = new Set( [ remove.dataset.id ] ); await deleteSelected(); }
+			if ( restore ) openRestore( restore.dataset.filename );
+		} catch ( error ) { feedback( '#zoecloud-feedback', error.message, true ); }
+	} );
+	const deleteSelected = async () => {
+		if ( ! state.selected.size || ! window.confirm( t( 'deleteConfirm', 'Delete selected backups?' ) ) ) return;
+		const result = await request( 'backups/bulk-delete', { method: 'POST', body: { ids: Array.from( state.selected ) } } );
+		state.selected.clear(); feedback( '#zoecloud-feedback', result.errors && Object.keys( result.errors ).length ? Object.values( result.errors ).join( ' ' ) : t( 'deleted', 'Backups deleted.' ), !! ( result.errors && Object.keys( result.errors ).length ) ); await refresh();
 	};
+	$( '#zoecloud-bulk-delete' )?.addEventListener( 'click', () => deleteSelected().catch( ( error ) => feedback( '#zoecloud-feedback', error.message, true ) ) );
 
-	const setRestoreFeedback = ( message, isError = false ) => {
-		if ( ! state.restoreFeedback ) {
-			return;
-		}
-
-		state.restoreFeedback.textContent = message;
-		state.restoreFeedback.classList.toggle( 'is-error', isError );
-	};
-
-	const switchRestoreMode = ( mode ) => {
-		state.restoreMode = mode;
-
-		state.restoreModeBtns.forEach( ( btn ) => {
-			btn.classList.toggle( 'is-active', btn.dataset.zoecloudRestoreMode === mode );
-		} );
-
-		state.restorePanels.forEach( ( panel ) => {
-			panel.hidden = panel.dataset.zoecloudRestorePanel !== mode;
-		} );
-
-		setRestoreFeedback( '' );
-
-		if ( state.uploadFeedback ) {
-			state.uploadFeedback.textContent = '';
-			state.uploadFeedback.classList.remove( 'is-error' );
-		}
-	};
-
-	state.restoreModeBtns.forEach( ( btn ) => {
-		btn.addEventListener( 'click', () => switchRestoreMode( btn.dataset.zoecloudRestoreMode ) );
-	} );
-
-	state.uploadFileInput?.addEventListener( 'change', () => {
-		const file = state.uploadFileInput.files?.[ 0 ];
-
-		if ( state.uploadFilename ) {
-			state.uploadFilename.textContent = file ? file.name : 'Choose a ZIP file or drop it here';
-		}
-
-		state.currentTempKey = '';
-	} );
-
-	state.uploadArea?.addEventListener( 'dragover', ( event ) => {
-		event.preventDefault();
-		state.uploadArea.classList.add( 'is-dragover' );
-	} );
-
-	state.uploadArea?.addEventListener( 'dragleave', () => {
-		state.uploadArea.classList.remove( 'is-dragover' );
-	} );
-
-	state.uploadArea?.addEventListener( 'drop', ( event ) => {
-		event.preventDefault();
-		state.uploadArea.classList.remove( 'is-dragover' );
-
-		const file = event.dataTransfer?.files?.[ 0 ];
-
-		if ( file && state.uploadFileInput ) {
-			const dt = new DataTransfer();
-			dt.items.add( file );
-			state.uploadFileInput.files = dt.files;
-
-			if ( state.uploadFilename ) {
-				state.uploadFilename.textContent = file.name;
-			}
-
-			state.currentTempKey = '';
-		}
-	} );
-
-	const setUploadFeedback = ( message, isError = false ) => {
-		if ( ! state.uploadFeedback ) {
-			return;
-		}
-
-		state.uploadFeedback.textContent = message;
-		state.uploadFeedback.classList.toggle( 'is-error', isError );
-	};
-
-	state.uploadZipButton?.addEventListener( 'click', async () => {
-		const file = state.uploadFileInput?.files?.[ 0 ];
-
-		if ( ! file ) {
-			setUploadFeedback( 'Select a ZIP file first.', true );
-			return;
-		}
-
-		state.uploadZipButton.disabled = true;
-		setUploadFeedback( 'Uploading and importing backup…' );
-
-		const formData = new FormData();
-		formData.append( 'zip_file', file );
-
+	const dialog = $( '#zoecloud-restore-dialog' );
+	const openRestore = async ( filename ) => {
+		state.restoreFilename = filename; $( '#zoecloud-restore-hostname' ).value = ''; $( '#zoecloud-run-restore' ).disabled = true; dialog.showModal();
+		$( '#zoecloud-restore-plan' ).innerHTML = `<p>${ escapeHtml( t( 'loading', 'Inspecting backup…' ) ) }</p>`;
 		try {
-			const response = await fetch( buildUrl( 'backups/upload' ), {
-				method: 'POST',
-				headers: {
-					'X-WP-Nonce': zoecloudAdmin.nonce,
-				},
-				body: formData,
-			} );
-
-			const data = await response.json().catch( () => ( {} ) );
-
-			if ( ! response.ok ) {
-				throw new Error( data.message || 'Upload failed' );
-			}
-
-			// Clear the file input.
-			if ( state.uploadFileInput ) {
-				state.uploadFileInput.value = '';
-			}
-
-			if ( state.uploadFilename ) {
-				state.uploadFilename.textContent = 'Choose a ZIP file or drop it here';
-			}
-
-			setUploadFeedback( `Backup imported: ${ data.filename || '' }. It now appears in the backup list.` );
-
-			// Refresh the backup list and switch to the "existing" mode so
-			// the user can immediately select the new backup for restore.
-			await refresh();
-			switchRestoreMode( 'existing' );
-
-			if ( state.restoreFilename ) {
-				state.restoreFilename.value = data.filename || '';
-			}
-		} catch ( error ) {
-			setUploadFeedback( error.message, true );
-		} finally {
-			state.uploadZipButton.disabled = false;
-		}
-	} );
-
-	state.validateRestore?.addEventListener( 'click', async () => {
-		let queryParam;
-
-		if ( state.restoreMode === 'upload' ) {
-			if ( ! state.currentTempKey ) {
-				setRestoreFeedback( 'Upload a ZIP file first.', true );
-				return;
-			}
-
-			queryParam = `temp_key=${ encodeURIComponent( state.currentTempKey ) }`;
-		} else {
-			const filename = state.restoreFilename?.value || '';
-
-			if ( ! filename ) {
-				setRestoreFeedback( 'Select a backup first.', true );
-				return;
-			}
-
-			queryParam = `filename=${ encodeURIComponent( filename ) }`;
-		}
-
+			const plan = await request( `restore?filename=${ encodeURIComponent( filename ) }` );
+			$( '#zoecloud-restore-search' ).value = plan.origin_home_url || state.status?.summary?.latest_backup?.manifest?.home_url || '';
+			$( '#zoecloud-restore-plan' ).innerHTML = `<div><span>${ escapeHtml( t( 'origin', 'Origin' ) ) }</span><strong>${ escapeHtml( plan.origin_home_url || '—' ) }</strong></div><div><span>${ escapeHtml( t( 'files', 'Files' ) ) }</span><strong>${ Number( plan.files_count ) || 0 }</strong></div><div><span>${ escapeHtml( t( 'databaseRows', 'Database rows' ) ) }</span><strong>${ Number( plan.database_rows ) || 0 }</strong></div><div><span>${ escapeHtml( t( 'archiveSize', 'Archive size' ) ) }</span><strong>${ escapeHtml( formatBytes( plan.archive_size ) ) }</strong></div>`;
+			feedback( '#zoecloud-restore-feedback', t( 'validBackup', 'Backup verified.' ) );
+		} catch ( error ) { feedback( '#zoecloud-restore-feedback', error.message, true ); }
+	};
+	$( '#zoecloud-restore-hostname' )?.addEventListener( 'input', ( event ) => { $( '#zoecloud-run-restore' ).disabled = event.target.value.trim().toLowerCase() !== config.hostname.toLowerCase(); } );
+	$( '#zoecloud-cancel-restore' )?.addEventListener( 'click', () => dialog.close() );
+	$( '#zoecloud-run-restore' )?.addEventListener( 'click', async ( event ) => {
+		const button = event.currentTarget; button.disabled = true; feedback( '#zoecloud-restore-feedback', t( 'loading', 'Queueing protected restore…' ) );
 		try {
-			const plan = await request( `restore?${ queryParam }` );
-			setRestoreFeedback(
-				`Valid backup. Origin: ${ plan.origin_home_url || 'unknown' }. Files: ${ plan.files_count ?? 'unknown' }. Database rows: ${ plan.database_rows ?? 'unknown' }.`
-			);
-		} catch ( error ) {
-			setRestoreFeedback( error.message, true );
-		}
+			const job = await request( 'restores', { method: 'POST', body: { filename: state.restoreFilename, search: $( '#zoecloud-restore-search' ).value, replace: $( '#zoecloud-restore-replace' ).value, hostname: $( '#zoecloud-restore-hostname' ).value, safety_backup: $( '#zoecloud-safety-backup' ).checked } } );
+			feedback( '#zoecloud-restore-feedback', t( 'restoreQueued', 'Protected restore queued.' ) ); pollJob( job.id, true );
+		} catch ( error ) { feedback( '#zoecloud-restore-feedback', error.message, true ); button.disabled = false; }
 	} );
 
-	state.runRestore?.addEventListener( 'click', async () => {
-		let body;
-
-		if ( state.restoreMode === 'upload' ) {
-			if ( ! state.currentTempKey ) {
-				setRestoreFeedback( 'Upload a ZIP file first.', true );
-				return;
-			}
-
-			body = {
-				temp_key: state.currentTempKey,
-				search: state.restoreSearch?.value || '',
-				replace: state.restoreReplace?.value || '',
-				confirm: true,
-			};
-		} else {
-			const filename = state.restoreFilename?.value || '';
-
-			if ( ! filename ) {
-				setRestoreFeedback( 'Select a backup first.', true );
-				return;
-			}
-
-			body = {
-				filename,
-				search: state.restoreSearch?.value || '',
-				replace: state.restoreReplace?.value || '',
-				confirm: true,
-			};
-		}
-
-		if ( ! window.confirm( 'This will overwrite files and database tables. Continue?' ) ) {
-			return;
-		}
-
-		state.runRestore.disabled = true;
-		setRestoreFeedback( 'Running restore…' );
-
+	const uploadInput = $( '#zoecloud-upload-file' ); const uploadArea = $( '#zoecloud-upload-area' );
+	const setUploadFile = ( file ) => { if ( ! file ) return; const dt = new DataTransfer(); dt.items.add( file ); uploadInput.files = dt.files; $( '#zoecloud-upload-filename' ).textContent = file.name; };
+	uploadInput?.addEventListener( 'change', () => { if ( uploadInput.files?.[0] ) $( '#zoecloud-upload-filename' ).textContent = uploadInput.files[0].name; } );
+	uploadArea?.addEventListener( 'dragover', ( event ) => { event.preventDefault(); uploadArea.classList.add( 'is-dragover' ); } );
+	uploadArea?.addEventListener( 'dragleave', () => uploadArea.classList.remove( 'is-dragover' ) );
+	uploadArea?.addEventListener( 'drop', ( event ) => { event.preventDefault(); uploadArea.classList.remove( 'is-dragover' ); setUploadFile( event.dataTransfer?.files?.[0] ); } );
+	$( '#zoecloud-upload-zip' )?.addEventListener( 'click', async ( event ) => {
+		const file = uploadInput?.files?.[0]; if ( ! file ) { feedback( '#zoecloud-upload-feedback', t( 'selectZip', 'Choose a ZIP first.' ), true ); return; }
+		const button = event.currentTarget; button.disabled = true; const data = new FormData(); data.append( 'zip_file', file ); feedback( '#zoecloud-upload-feedback', t( 'loading', 'Uploading…' ) );
 		try {
-			await request( 'restore', {
-				method: 'POST',
-				body,
-			} );
-			setRestoreFeedback( 'Restore completed.' );
-
-			if ( state.restoreMode === 'upload' ) {
-				state.currentTempKey = '';
-
-				if ( state.uploadFileInput ) {
-					state.uploadFileInput.value = '';
-				}
-
-				if ( state.uploadFilename ) {
-					state.uploadFilename.textContent = 'Choose a ZIP file or drop it here';
-				}
-
-				setUploadFeedback( '' );
-			}
-
-			alert( 'Restore completed successfully. The page will now reload.' );
-			window.location.reload();
-		} catch ( error ) {
-			setRestoreFeedback( error.message, true );
-		} finally {
-			state.runRestore.disabled = false;
-		}
+			const response = await fetch( buildUrl( 'backups/upload' ), { method: 'POST', headers: { 'X-WP-Nonce': config.nonce }, body: data } ); const result = await response.json().catch( () => ( {} ) ); if ( ! response.ok ) throw new Error( result.message || t( 'unknownError' ) );
+			uploadInput.value = ''; $( '#zoecloud-upload-filename' ).textContent = t( 'chooseZip', 'Choose a ZIP or drop it here' ); feedback( '#zoecloud-upload-feedback', t( 'uploadComplete', 'Backup imported.' ) ); await refresh();
+		} catch ( error ) { feedback( '#zoecloud-upload-feedback', error.message, true ); } finally { button.disabled = false; }
 	} );
 
-	refresh().catch( ( error ) => setFeedback( error.message, true ) );
+	const provider = $( '#zoecloud_storage_provider' );
+	const updateProvider = () => $$( '[data-zoecloud-provider-fields]' ).forEach( ( fields ) => { fields.hidden = fields.dataset.zoecloudProviderFields !== provider?.value; } );
+	provider?.addEventListener( 'change', updateProvider ); updateProvider();
+	const schedule = $( '#zoecloud_schedule' ); const updateSchedule = () => { if ( $( '#zoecloud_schedule_weekday_row' ) ) $( '#zoecloud_schedule_weekday_row' ).hidden = schedule?.value !== 'weekly'; }; schedule?.addEventListener( 'change', updateSchedule ); updateSchedule();
+	$( '#zoecloud-test-storage' )?.addEventListener( 'click', async ( event ) => { const button = event.currentTarget; button.disabled = true; feedback( '#zoecloud-storage-feedback', t( 'loading', 'Testing…' ) ); try { await request( 'storage/test', { method: 'POST' } ); feedback( '#zoecloud-storage-feedback', t( 'connectionSuccess', 'Connection successful.' ) ); } catch ( error ) { feedback( '#zoecloud-storage-feedback', error.message, true ); } finally { button.disabled = false; } } );
+	$( '#zoecloud-activity-filter' )?.addEventListener( 'change', renderActivity );
+
+	refresh().catch( ( error ) => { $( '#zoecloud-global-status' ).textContent = t( 'attention', 'Needs attention' ); feedback( '#zoecloud-feedback', error.message, true ); } );
 }() );

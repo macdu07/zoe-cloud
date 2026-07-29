@@ -6,11 +6,14 @@
 	"require-dev": {
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.0",
 		"phpcompatibility/phpcompatibility-wp": "^2.1",
-		"wp-coding-standards/wpcs": "^3.1"
+		"phpunit/phpunit": "^9.6",
+		"wp-coding-standards/wpcs": "^3.4.1",
+		"yoast/phpunit-polyfills": "^4.0"
 	},
 	"scripts": {
 		"lint:php": "phpcs -n",
-		"lint:php:fix": "phpcbf"
+		"lint:php:fix": "phpcbf",
+		"test": "phpunit"
 	},
 	"config": {
 		"allow-plugins": {

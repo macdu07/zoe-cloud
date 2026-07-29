@@ -214,7 +214,29 @@ class ZoeCloud_Backup_Manager {
 	public function list_backups() {
 		$records = get_option( 'zoecloud_backups', array() );
 
-		return is_array( $records ) ? array_values( $records ) : array();
+		if ( ! is_array( $records ) ) {
+			return array();
+		}
+
+		return array_values( array_map( array( $this, 'normalize_backup_record' ), $records ) );
+	}
+
+	/**
+	 * Supply v0.2 metadata for records created by older releases.
+	 *
+	 * @param array $record Backup record.
+	 * @return array
+	 */
+	private function normalize_backup_record( array $record ) {
+		$manifest               = isset( $record['manifest'] ) && is_array( $record['manifest'] ) ? $record['manifest'] : array();
+		$record['source']       = sanitize_key( $record['source'] ?? ( ! empty( $record['imported'] ) ? 'imported' : 'manual' ) );
+		$record['scope']        = sanitize_key( $record['scope'] ?? ( ! empty( $manifest['include_core'] ) ? 'full' : 'site_data' ) );
+		$record['locked']       = ! empty( $record['locked'] );
+		$record['checksum']     = (string) ( $record['checksum'] ?? '' );
+		$record['verified_at']  = (string) ( $record['verified_at'] ?? '' );
+		$record['cloud_status'] = ! empty( $record['cloud'] ) ? 'uploaded' : ( ! empty( $record['cloud_error'] ) ? 'failed' : 'local' );
+
+		return $record;
 	}
 
 	/**
@@ -239,12 +261,22 @@ class ZoeCloud_Backup_Manager {
 			'stage'      => 'init',
 			'args'       => array(
 				'include_core' => ! empty( $args['include_core'] ),
-				'upload_drive' => ! empty( $args['upload_drive'] ),
+				'upload_cloud' => ! empty( $args['upload_cloud'] ) || ! empty( $args['upload_drive'] ),
+				'source'       => in_array( $args['source'] ?? 'manual', array( 'manual', 'scheduled', 'safety' ), true ) ? $args['source'] : 'manual',
+				'scope'        => ! empty( $args['include_core'] ) ? 'full' : 'site_data',
 			),
 			'state'      => array(),
 			'created_at' => current_time( 'mysql', true ),
 			'updated_at' => current_time( 'mysql', true ),
 			'result'     => null,
+			'events'     => array(
+				array(
+					'time'    => current_time( 'mysql', true ),
+					'stage'   => 'init',
+					'status'  => 'queued',
+					'message' => __( 'Backup queued.', 'zoe-cloud' ),
+				),
+			),
 		);
 
 		$jobs               = $this->list_jobs();
@@ -309,7 +341,8 @@ class ZoeCloud_Backup_Manager {
 					case 'finalize':
 						$result = $this->process_job_finalize( $job );
 						break;
-					case 'upload_drive':
+					case 'upload_drive': // Backwards compatibility for jobs queued before v0.2.
+					case 'cloud_upload':
 						$result = $this->process_job_cloud_upload( $job );
 						break;
 					case 'cleanup':
@@ -357,6 +390,88 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
+	 * Return a dashboard summary derived from authoritative records.
+	 *
+	 * @return array
+	 */
+	public function get_summary() {
+		$backups  = $this->list_backups();
+		$jobs     = array_values( $this->list_jobs() );
+		$latest   = $backups[0] ?? null;
+		$last_job = $jobs[0] ?? null;
+		$total    = 0;
+
+		foreach ( $backups as $backup ) {
+			$total += absint( $backup['size'] ?? 0 );
+		}
+
+		return array(
+			'backup_count'      => count( $backups ),
+			'local_total_bytes' => $total,
+			'latest_backup'     => $latest,
+			'latest_job'        => $last_job,
+		);
+	}
+
+	/**
+	 * Lock or unlock a backup so retention cannot remove it.
+	 *
+	 * @param string $backup_id Backup UUID.
+	 * @param bool   $locked    New lock state.
+	 * @return array|WP_Error
+	 */
+	public function update_backup( $backup_id, $locked ) {
+		$records = $this->list_backups();
+
+		foreach ( $records as &$record ) {
+			if ( ( $record['id'] ?? '' ) === $backup_id ) {
+				$record['locked'] = (bool) $locked;
+				update_option( 'zoecloud_backups', $records, false );
+				return $record;
+			}
+		}
+
+		return new WP_Error( 'zoecloud_backup_missing', __( 'Backup file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+	}
+
+	/**
+	 * Delete multiple unlocked backups.
+	 *
+	 * @param array $ids Backup IDs.
+	 * @return array
+	 */
+	public function bulk_delete_backups( array $ids ) {
+		$deleted = array();
+		$errors  = array();
+
+		foreach ( array_unique( array_map( 'sanitize_text_field', $ids ) ) as $id ) {
+			$record = current(
+				array_filter(
+					$this->list_backups(),
+					static function ( $item ) use ( $id ) {
+						return ( $item['id'] ?? '' ) === $id;
+					}
+				)
+			);
+			if ( $record && ! empty( $record['locked'] ) ) {
+				$errors[ $id ] = __( 'Locked backups cannot be deleted.', 'zoe-cloud' );
+				continue;
+			}
+			$result = $this->delete_backup( $id );
+			if ( is_wp_error( $result ) ) {
+				$errors[ $id ] = $result->get_error_message();
+			} else {
+				$deleted[] = $id;
+			}
+		}
+
+		return array(
+			'deleted' => $deleted,
+			'errors'  => $errors,
+		);
+	}
+
+	/**
 	 * Get a single job.
 	 *
 	 * @param string $job_id Job ID.
@@ -387,7 +502,7 @@ class ZoeCloud_Backup_Manager {
 			$job['args'],
 			array(
 				'include_core' => false,
-				'upload_drive' => true,
+				'upload_cloud' => true,
 			)
 		);
 		$settings    = $this->get_settings();
@@ -665,14 +780,19 @@ class ZoeCloud_Backup_Manager {
 			'size'         => file_exists( $state['archive_path'] ) ? filesize( $state['archive_path'] ) : 0,
 			'manifest'     => $state['manifest'],
 			'cloud'        => null,
+			'source'       => $job['args']['source'] ?? 'manual',
+			'scope'        => $job['args']['scope'] ?? ( ! empty( $job['args']['include_core'] ) ? 'full' : 'site_data' ),
+			'locked'       => false,
+			'checksum'     => file_exists( $state['archive_path'] ) ? hash_file( 'sha256', $state['archive_path'] ) : '',
+			'verified_at'  => current_time( 'mysql', true ),
 		);
 
 		$this->store_record( $record );
 		$this->apply_retention_policy();
 		$state['backup_id'] = $record['id'];
 
-		if ( ! empty( $job['args']['upload_drive'] ) ) {
-			$this->advance_job( $job['id'], 'upload_drive', 90, __( 'Uploading backup to cloud storage.', 'zoe-cloud' ), $state );
+		if ( ! empty( $job['args']['upload_cloud'] ) ) {
+			$this->advance_job( $job['id'], 'cloud_upload', 90, __( 'Uploading backup to cloud storage.', 'zoe-cloud' ), $state );
 		} else {
 			$this->advance_job( $job['id'], 'cleanup', 95, __( 'Cleaning up temporary files.', 'zoe-cloud' ), $state, array( 'backup_id' => $record['id'] ) );
 		}
@@ -735,6 +855,10 @@ class ZoeCloud_Backup_Manager {
 
 			if ( ! $matches_id && ! $matches_filename ) {
 				continue;
+			}
+
+			if ( ! empty( $record['locked'] ) ) {
+				return new WP_Error( 'zoecloud_backup_locked', __( 'Unlock this backup before deleting it.', 'zoe-cloud' ), array( 'status' => 409 ) );
 			}
 
 			$delete_result = $this->delete_backup_files( $record );
@@ -807,6 +931,11 @@ class ZoeCloud_Backup_Manager {
 			'manifest'     => $manifest,
 			'cloud'        => null,
 			'imported'     => true,
+			'source'       => 'imported',
+			'scope'        => ! empty( $manifest['include_core'] ) ? 'full' : 'site_data',
+			'locked'       => false,
+			'checksum'     => hash_file( 'sha256', $dest ),
+			'verified_at'  => current_time( 'mysql', true ),
 		);
 
 		$this->store_record( $record );
@@ -882,14 +1011,15 @@ class ZoeCloud_Backup_Manager {
 		$settings = wp_parse_args(
 			get_option( 'zoecloud_settings', array() ),
 			array(
-				'auto_upload_drive' => 1,
+				'auto_upload_cloud' => 1,
 			)
 		);
 
 		$this->enqueue_backup(
 			array(
 				'include_core' => false,
-				'upload_drive' => ! empty( $settings['auto_upload_drive'] ),
+				'upload_cloud' => ! empty( $settings['auto_upload_cloud'] ) || ! empty( $settings['auto_upload_drive'] ),
+				'source'       => 'scheduled',
 			)
 		);
 	}
@@ -1000,6 +1130,7 @@ class ZoeCloud_Backup_Manager {
 		$jobs[ $job_id ]['progress']   = max( 0, min( 100, absint( $progress ) ) );
 		$jobs[ $job_id ]['message']    = (string) $message;
 		$jobs[ $job_id ]['updated_at'] = current_time( 'mysql', true );
+		$this->append_job_event( $jobs[ $job_id ], $jobs[ $job_id ]['stage'] ?? '', $status, $message );
 
 		if ( ! empty( $result ) ) {
 			$jobs[ $job_id ]['result'] = $result;
@@ -1032,12 +1163,33 @@ class ZoeCloud_Backup_Manager {
 		$jobs[ $job_id ]['message']    = (string) $message;
 		$jobs[ $job_id ]['state']      = $state;
 		$jobs[ $job_id ]['updated_at'] = current_time( 'mysql', true );
+		$this->append_job_event( $jobs[ $job_id ], $stage, 'running', $message );
 
 		if ( ! empty( $result ) ) {
 			$jobs[ $job_id ]['result'] = $result;
 		}
 
 		$this->save_jobs( $jobs );
+	}
+
+	/**
+	 * Append a bounded, user-safe event to a job.
+	 *
+	 * @param array  $job     Job passed by reference.
+	 * @param string $stage   Stage key.
+	 * @param string $status  Status key.
+	 * @param string $message Message.
+	 * @return void
+	 */
+	private function append_job_event( array &$job, $stage, $status, $message ) {
+		$job['events']   = isset( $job['events'] ) && is_array( $job['events'] ) ? $job['events'] : array();
+		$job['events'][] = array(
+			'time'    => current_time( 'mysql', true ),
+			'stage'   => sanitize_key( $stage ),
+			'status'  => sanitize_key( $status ),
+			'message' => sanitize_text_field( $message ),
+		);
+		$job['events']   = array_slice( $job['events'], -100 );
 	}
 
 	/**
@@ -1091,7 +1243,7 @@ class ZoeCloud_Backup_Manager {
 			}
 		);
 
-		update_option( 'zoecloud_jobs', array_slice( $jobs, 0, 25, true ), false );
+		update_option( 'zoecloud_jobs', array_slice( $jobs, 0, 50, true ), false );
 	}
 
 	/**
@@ -1150,8 +1302,24 @@ class ZoeCloud_Backup_Manager {
 			return;
 		}
 
-		$expired = array_slice( $records, $retention );
-		$active  = array_slice( $records, 0, $retention );
+		$unlocked = array_values(
+			array_filter(
+				$records,
+				static function ( $record ) {
+					return empty( $record['locked'] );
+				}
+			)
+		);
+		$locked   = array_values(
+			array_filter(
+				$records,
+				static function ( $record ) {
+					return ! empty( $record['locked'] );
+				}
+			)
+		);
+		$expired  = array_slice( $unlocked, $retention );
+		$active   = array_merge( $locked, array_slice( $unlocked, 0, $retention ) );
 
 		foreach ( $expired as $record ) {
 			$delete_result = $this->delete_backup_files( $record );
