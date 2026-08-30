@@ -8,3 +8,7 @@ phpcs.xml
 phpcs.xml.dist
 vendor
 node_modules
+.github
+bin
+tests
+phpunit.xml.dist

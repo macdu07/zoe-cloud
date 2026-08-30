@@ -21,28 +21,68 @@ class ZoeCloud_Plugin {
 	private $backup_manager;
 
 	/**
+	 * Durable job repository.
+	 *
+	 * @var ZoeCloud_Job_Repository
+	 */
+	private $jobs;
+
+	/**
+	 * REST and restore job controller.
+	 *
+	 * @var ZoeCloud_REST_Controller
+	 */
+	private $rest_controller;
+
+	/**
 	 * Boot the plugin.
 	 *
 	 * @return void
 	 */
 	public function boot() {
+		$this->maybe_install_schema();
 		$this->maybe_upgrade_settings();
-		$crypto               = new ZoeCloud_Crypto();
-		$r2_service           = new ZoeCloud_R2_Service( $crypto );
-		$this->backup_manager = new ZoeCloud_Backup_Manager( $r2_service );
-		$restore_manager      = new ZoeCloud_Restore_Manager();
-		$rest_controller      = new ZoeCloud_REST_Controller( $this->backup_manager, $restore_manager, $r2_service );
-		$admin                = new ZoeCloud_Admin( $crypto, $r2_service );
+		$crypto                = new ZoeCloud_Crypto();
+		$storage               = new ZoeCloud_Storage();
+		$backup_repository     = new ZoeCloud_Backup_Repository();
+		$this->jobs            = new ZoeCloud_Job_Repository();
+		$r2_service            = new ZoeCloud_R2_Service( $crypto );
+		$this->backup_manager  = new ZoeCloud_Backup_Manager( $r2_service, $backup_repository, $this->jobs, $storage );
+		$restore_manager       = new ZoeCloud_Restore_Manager( $storage, $backup_repository );
+		$rest_controller       = new ZoeCloud_REST_Controller( $this->backup_manager, $restore_manager, $r2_service, $this->jobs, $backup_repository, $storage );
+		$this->rest_controller = $rest_controller;
+		$admin                 = new ZoeCloud_Admin( $crypto, $r2_service );
 
 		add_action( 'rest_api_init', array( $rest_controller, 'register_routes' ) );
 		add_action( 'zoecloud_run_scheduled_backup', array( $this->backup_manager, 'run_scheduled_backup' ) );
 		add_action( 'zoecloud_run_backup_job', array( $this->backup_manager, 'run_backup_job' ) );
 		add_action( 'zoecloud_run_restore_job', array( $rest_controller, 'run_restore_job' ) );
+		add_action( 'zoecloud_run_cloud_download_job', array( $rest_controller, 'run_cloud_download_job' ) );
 		add_action( 'admin_post_zoecloud_download_backup', array( $this->backup_manager, 'stream_backup_download' ) );
 		add_action( 'update_option_zoecloud_settings', array( $this, 'sync_schedule' ), 10, 2 );
 		add_filter( 'cron_schedules', array( $this, 'register_cron_schedules' ) );
+		add_action( 'init', array( $this, 'reconcile_schedule' ), 20 );
+		add_action( 'init', array( $this, 'reconcile_job_runner' ), 21 );
+		add_action( 'zoecloud_run_jobs', array( $this, 'run_due_jobs' ) );
 
 		$admin->hooks();
+
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			$cli = new ZoeCloud_CLI( $this->backup_manager, $this->jobs, $rest_controller, $this );
+			WP_CLI::add_command( 'zoecloud backup create', array( $cli, 'backup_create' ) );
+			WP_CLI::add_command( 'zoecloud backup list', array( $cli, 'backup_list' ) );
+			WP_CLI::add_command( 'zoecloud backup verify', array( $cli, 'backup_verify' ) );
+			WP_CLI::add_command( 'zoecloud restore', array( $cli, 'restore' ) );
+			WP_CLI::add_command( 'zoecloud jobs run', array( $cli, 'jobs_run' ) );
+			WP_CLI::add_command( 'zoecloud doctor', array( $cli, 'doctor' ) );
+		}
+	}
+
+	/** Ensure fresh installations have the current operational schema. */
+	private function maybe_install_schema() {
+		if ( ZoeCloud_Schema::VERSION !== get_option( 'zoecloud_db_version' ) ) {
+			ZoeCloud_Schema::install();
+		}
 	}
 
 	/**
@@ -79,12 +119,40 @@ class ZoeCloud_Plugin {
 	 * @return array
 	 */
 	public function register_cron_schedules( $schedules ) {
-		$schedules['weekly'] = array(
+		$schedules['zoecloud_minute'] = array(
+			'interval' => MINUTE_IN_SECONDS,
+			'display'  => __( 'Every minute (ZoeCloud jobs)', 'zoe-cloud' ),
+		);
+		$schedules['weekly']          = array(
 			'interval' => WEEK_IN_SECONDS,
 			'display'  => __( 'Once Weekly', 'zoe-cloud' ),
 		);
 
 		return $schedules;
+	}
+
+	/** Ensure the independent background runner always has a recurring trigger. */
+	public function reconcile_job_runner() {
+		if ( ! wp_next_scheduled( 'zoecloud_run_jobs' ) ) {
+			wp_schedule_event( time() + MINUTE_IN_SECONDS, 'zoecloud_minute', 'zoecloud_run_jobs' );
+		}
+	}
+
+	/** Run a bounded set of due jobs without relying on an open admin page. */
+	public function run_due_jobs() {
+		foreach ( $this->jobs->due( 5 ) as $job_id ) {
+			$job = $this->jobs->find( $job_id );
+			if ( ! $job ) {
+				continue;
+			}
+			if ( 'backup' === $job['type'] ) {
+				$this->backup_manager->run_backup_job( $job_id, 10, 20 );
+			} elseif ( 'restore' === $job['type'] ) {
+				$this->rest_controller->run_restore_job( $job_id );
+			} elseif ( 'cloud_download' === $job['type'] ) {
+				$this->rest_controller->run_cloud_download_job( $job_id );
+			}
+		}
 	}
 
 	/**
@@ -93,6 +161,7 @@ class ZoeCloud_Plugin {
 	 * @return void
 	 */
 	public static function activate() {
+		ZoeCloud_Schema::install();
 		$defaults = array(
 			'schedule_enabled'     => 0,
 			'storage_provider'     => 'r2',
@@ -112,6 +181,7 @@ class ZoeCloud_Plugin {
 			'schedule_weekday'     => 'monday',
 			'auto_upload_cloud'    => 1,
 			'excluded_paths'       => array(),
+			'delete_on_uninstall'  => 0,
 		);
 
 		if ( ! get_option( 'zoecloud_settings' ) ) {
@@ -119,6 +189,24 @@ class ZoeCloud_Plugin {
 		}
 
 		// New installations opt in to automation from the guided setup.
+	}
+
+	/** Recreate a missing recurring event and remove disabled schedules. */
+	public function reconcile_schedule() {
+		$settings  = get_option( 'zoecloud_settings', array() );
+		$enabled   = ! empty( $settings['schedule_enabled'] );
+		$scheduled = wp_next_scheduled( 'zoecloud_run_scheduled_backup' );
+
+		if ( $enabled && ! $scheduled ) {
+			$schedule = $settings['schedule'] ?? 'daily';
+			if ( ! wp_schedule_event( self::get_next_schedule_timestamp( $settings ), $schedule, 'zoecloud_run_scheduled_backup' ) ) {
+				update_option( 'zoecloud_schedule_error', current_time( 'mysql', true ), false );
+			} else {
+				delete_option( 'zoecloud_schedule_error' );
+			}
+		} elseif ( ! $enabled && $scheduled ) {
+			wp_clear_scheduled_hook( 'zoecloud_run_scheduled_backup' );
+		}
 	}
 
 	/**
@@ -130,6 +218,8 @@ class ZoeCloud_Plugin {
 		wp_clear_scheduled_hook( 'zoecloud_run_scheduled_backup' );
 		wp_clear_scheduled_hook( 'zoecloud_run_backup_job' );
 		wp_clear_scheduled_hook( 'zoecloud_run_restore_job' );
+		wp_clear_scheduled_hook( 'zoecloud_run_cloud_download_job' );
+		wp_clear_scheduled_hook( 'zoecloud_run_jobs' );
 	}
 
 	/**

@@ -122,9 +122,14 @@ class ZoeCloud_R2_Service {
 
 		$filename = basename( $file_path );
 		$key      = $this->build_object_key( $config['prefix'], $manifest, $filename );
+		$checksum = hash_file( 'sha256', $file_path );
+		$metadata = array(
+			'x-amz-meta-zoecloud-sha256'         => $checksum,
+			'x-amz-meta-zoecloud-format-version' => (string) ( $manifest['format_version'] ?? 2 ),
+		);
 
 		if ( filesize( $file_path ) > self::MULTIPART_CHUNK_SIZE ) {
-			return $this->upload_multipart( $config, $key, $file_path, $provider, $filename );
+			return $this->upload_multipart( $config, $key, $file_path, $provider, $filename, $metadata );
 		}
 
 		$body = file_get_contents( $file_path );
@@ -132,7 +137,7 @@ class ZoeCloud_R2_Service {
 			return new WP_Error( 'zoecloud_cloud_file_read_failed', __( 'Could not read the backup archive for upload.', 'zoe-cloud' ) );
 		}
 
-		$headers = $this->build_signed_headers( $config, 'PUT', $key, $body );
+		$headers = $this->build_signed_headers( $config, 'PUT', $key, $body, false, '', '', $metadata );
 		$url     = $this->build_upload_url( $config, $key );
 
 		$response = wp_remote_request(
@@ -165,6 +170,7 @@ class ZoeCloud_R2_Service {
 			'key'      => $key,
 			'filename' => $filename,
 			'endpoint' => $config['endpoint'],
+			'checksum' => $checksum,
 		);
 	}
 
@@ -176,12 +182,13 @@ class ZoeCloud_R2_Service {
 	 * @param string $path     Local file.
 	 * @param string $provider Provider key.
 	 * @param string $filename Filename.
+	 * @param array  $metadata Object metadata.
 	 * @return array|WP_Error
 	 */
-	private function upload_multipart( array $config, $key, $path, $provider, $filename ) {
+	private function upload_multipart( array $config, $key, $path, $provider, $filename, array $metadata = array() ) {
 		$base_url = $this->build_upload_url( $config, $key );
 		$query    = 'uploads=';
-		$headers  = $this->build_signed_headers( $config, 'POST', $key, '', false, $query );
+		$headers  = $this->build_signed_headers( $config, 'POST', $key, '', false, $query, '', $metadata );
 		$created  = wp_remote_request(
 			$base_url . '?uploads',
 			array(
@@ -272,6 +279,7 @@ class ZoeCloud_R2_Service {
 			'filename'  => $filename,
 			'endpoint'  => $config['endpoint'],
 			'multipart' => true,
+			'checksum'  => $metadata['x-amz-meta-zoecloud-sha256'] ?? '',
 		);
 	}
 
@@ -355,6 +363,112 @@ class ZoeCloud_R2_Service {
 	}
 
 	/**
+	 * List ZoeCloud objects available in the active bucket.
+	 *
+	 * @param string $continuation_token S3 pagination token.
+	 * @return array|WP_Error
+	 */
+	public function list_backups( $continuation_token = '' ) {
+		$settings = $this->get_settings();
+		$provider = $this->get_provider( $settings );
+		$config   = $this->get_provider_config( $settings, $provider );
+		if ( ! $this->is_provider_configured( $config ) ) {
+			return new WP_Error( 'zoecloud_cloud_not_configured', __( 'Complete all required storage fields first.', 'zoe-cloud' ) );
+		}
+
+		$query = 'list-type=2&max-keys=1000';
+		if ( '' !== $config['prefix'] ) {
+			$query .= '&prefix=' . rawurlencode( trim( $config['prefix'], '/' ) . '/' );
+		}
+		if ( '' !== $continuation_token ) {
+			$query .= '&continuation-token=' . rawurlencode( $continuation_token );
+		}
+		$headers  = $this->build_signed_headers( $config, 'GET', '', '', true, $query );
+		$response = wp_remote_get(
+			$this->build_upload_url( $config, '' ) . '?' . $query,
+			array(
+				'timeout' => 30,
+				'headers' => $headers,
+			)
+		);
+		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) >= 300 ) {
+			return is_wp_error( $response ) ? $response : new WP_Error( 'zoecloud_cloud_list_failed', $this->format_cloud_error( $config, $response, __( 'list failed.', 'zoe-cloud' ) ) );
+		}
+
+		$body    = wp_remote_retrieve_body( $response );
+		$objects = array();
+		if ( preg_match_all( '/<Contents>(.*?)<\/Contents>/s', $body, $matches ) ) {
+			foreach ( $matches[1] as $content ) {
+				$key = $this->extract_xml_value( $content, 'Key' );
+				if ( '.zip' !== strtolower( substr( $key, -4 ) ) ) {
+					continue;
+				}
+				$objects[] = array(
+					'id'            => hash( 'sha256', $provider . '|' . $config['bucket'] . '|' . $key ),
+					'provider'      => $provider,
+					'bucket'        => $config['bucket'],
+					'key'           => $key,
+					'filename'      => basename( $key ),
+					'size'          => (int) $this->extract_xml_value( $content, 'Size' ),
+					'last_modified' => $this->extract_xml_value( $content, 'LastModified' ),
+				);
+			}
+		}
+
+		return array(
+			'objects'      => $objects,
+			'next_token'   => $this->extract_xml_value( $body, 'NextContinuationToken' ),
+			'is_truncated' => 'true' === strtolower( $this->extract_xml_value( $body, 'IsTruncated' ) ),
+		);
+	}
+
+	/**
+	 * Download and authenticate one cloud object into a caller-owned private path.
+	 *
+	 * @param array  $cloud             Cloud object metadata.
+	 * @param string $destination       Private destination path.
+	 * @param string $expected_checksum Optional expected SHA-256 checksum.
+	 * @return array|WP_Error
+	 */
+	public function download_backup( array $cloud, $destination, $expected_checksum = '' ) {
+		$settings = $this->get_settings();
+		$provider = $this->get_provider_from_cloud_record( $cloud );
+		$config   = $this->get_provider_config( $settings, $provider );
+		if ( ( $cloud['bucket'] ?? '' ) !== $config['bucket'] || empty( $cloud['key'] ) || ! $this->is_provider_configured( $config ) ) {
+			return new WP_Error( 'zoecloud_cloud_download_invalid', __( 'Cloud backup metadata does not match the configured destination.', 'zoe-cloud' ) );
+		}
+
+		$key      = ltrim( (string) $cloud['key'], '/' );
+		$headers  = $this->build_signed_headers( $config, 'GET', $key, '', true );
+		$response = wp_remote_get(
+			$this->build_upload_url( $config, $key ),
+			array(
+				'timeout'  => 300,
+				'headers'  => $headers,
+				'stream'   => true,
+				'filename' => $destination,
+			)
+		);
+		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) >= 300 ) {
+			wp_delete_file( $destination );
+			return is_wp_error( $response ) ? $response : new WP_Error( 'zoecloud_cloud_download_failed', $this->format_cloud_error( $config, $response, __( 'download failed.', 'zoe-cloud' ) ) );
+		}
+
+		$remote_checksum = (string) wp_remote_retrieve_header( $response, 'x-amz-meta-zoecloud-sha256' );
+		$expected        = preg_match( '/^[a-f0-9]{64}$/', $expected_checksum ) ? $expected_checksum : $remote_checksum;
+		$actual          = is_readable( $destination ) ? hash_file( 'sha256', $destination ) : '';
+		if ( ! preg_match( '/^[a-f0-9]{64}$/', $expected ) || ! hash_equals( $expected, $actual ) ) {
+			wp_delete_file( $destination );
+			return new WP_Error( 'zoecloud_cloud_checksum_mismatch', __( 'The downloaded cloud backup failed integrity verification.', 'zoe-cloud' ) );
+		}
+
+		return array(
+			'path'     => $destination,
+			'checksum' => $actual,
+		);
+	}
+
+	/**
 	 * Parse settings and decrypt stored secrets.
 	 *
 	 * @return array
@@ -377,8 +491,11 @@ class ZoeCloud_R2_Service {
 			)
 		);
 
-		$settings['r2_secret_access_key'] = $this->crypto->decrypt( $settings['r2_secret_access_key'] );
-		$settings['s3_secret_access_key'] = $this->crypto->decrypt( $settings['s3_secret_access_key'] );
+		$r2_secret                        = $this->crypto->decrypt( $settings['r2_secret_access_key'] );
+		$s3_secret                        = $this->crypto->decrypt( $settings['s3_secret_access_key'] );
+		$settings['r2_secret_access_key'] = is_wp_error( $r2_secret ) ? '' : $r2_secret;
+		$settings['s3_secret_access_key'] = is_wp_error( $s3_secret ) ? '' : $s3_secret;
+		$settings['credential_error']     = is_wp_error( $r2_secret ) ? $r2_secret : ( is_wp_error( $s3_secret ) ? $s3_secret : null );
 
 		return $settings;
 	}
@@ -506,10 +623,11 @@ class ZoeCloud_R2_Service {
 	 * @param string $body     Request body.
 	 * @param bool   $unsigned Whether to use S3's unsigned payload marker.
 	 * @param string $query    Canonical query string.
-	 * @param string $content_type Optional body content type.
+	 * @param string $content_type  Optional body content type.
+	 * @param array  $extra_headers Additional signed headers.
 	 * @return array
 	 */
-	private function build_signed_headers( array $config, $method, $key, $body, $unsigned = false, $query = '', $content_type = '' ) {
+	private function build_signed_headers( array $config, $method, $key, $body, $unsigned = false, $query = '', $content_type = '', array $extra_headers = array() ) {
 		$timestamp       = gmdate( 'Ymd\THis\Z' );
 		$date            = gmdate( 'Ymd' );
 		$region          = $config['region'];
@@ -526,6 +644,12 @@ class ZoeCloud_R2_Service {
 			'x-amz-content-sha256' => $payload_hash,
 			'x-amz-date'           => $timestamp,
 		);
+		foreach ( $extra_headers as $name => $value ) {
+			$name = strtolower( preg_replace( '/[^a-z0-9-]/', '', (string) $name ) );
+			if ( 0 === strpos( $name, 'x-amz-meta-' ) ) {
+				$headers[ $name ] = trim( preg_replace( '/\s+/', ' ', (string) $value ) );
+			}
+		}
 
 		// Only include content-type for requests that carry a body; omitting it for
 		// DELETE avoids a SignatureDoesNotMatch because AWS won't see that header.
@@ -574,6 +698,9 @@ class ZoeCloud_R2_Service {
 
 		if ( isset( $headers['content-type'] ) ) {
 			$result['Content-Type'] = $headers['content-type'];
+		}
+		foreach ( $extra_headers as $name => $value ) {
+			$result[ $name ] = $value;
 		}
 
 		return $result;

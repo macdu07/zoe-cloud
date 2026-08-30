@@ -3,6 +3,9 @@
 	"description": "WordPress backups with portable archives, restore tooling, and cloud uploads.",
 	"type": "wordpress-plugin",
 	"license": "GPL-2.0-or-later",
+	"require": {
+		"php": ">=8.1"
+	},
 	"require-dev": {
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.0",
 		"phpcompatibility/phpcompatibility-wp": "^2.1",
@@ -11,9 +14,11 @@
 		"yoast/phpunit-polyfills": "^4.0"
 	},
 	"scripts": {
+		"test:install": "bash bin/install-wp-tests.sh",
 		"lint:php": "phpcs -n",
 		"lint:php:fix": "phpcbf",
-		"test": "phpunit"
+		"test": "phpunit",
+		"package": "bash bin/build-zip.sh"
 	},
 	"config": {
 		"allow-plugins": {

@@ -116,20 +116,38 @@ class ZoeCloud_Admin {
 			'schedule_weekday'     => $schedule_weekday,
 			'auto_upload_cloud'    => 'backup' === $section ? ( ! empty( $settings['auto_upload_cloud'] ) ? 1 : 0 ) : absint( $current['auto_upload_cloud'] ?? ( $current['auto_upload_drive'] ?? 1 ) ),
 			'excluded_paths'       => $this->sanitize_excluded_paths( $settings['excluded_paths'] ?? ( $current['excluded_paths'] ?? array() ) ),
+			'delete_on_uninstall'  => 'backup' === $section ? ( ! empty( $settings['delete_on_uninstall'] ) ? 1 : 0 ) : absint( $current['delete_on_uninstall'] ?? 0 ),
 		);
 
 		$r2_secret = trim( (string) ( $settings['r2_secret_access_key'] ?? '' ) );
 		$s3_secret = trim( (string) ( $settings['s3_secret_access_key'] ?? '' ) );
 
-		$clean['r2_secret_access_key'] = '' !== $r2_secret
-			? $this->crypto->encrypt( $r2_secret )
-			: ( $current['r2_secret_access_key'] ?? '' );
-
-		$clean['s3_secret_access_key'] = '' !== $s3_secret
-			? $this->crypto->encrypt( $s3_secret )
-			: ( $current['s3_secret_access_key'] ?? '' );
+		$clean['r2_secret_access_key'] = $this->encrypt_secret_or_keep( $r2_secret, $current['r2_secret_access_key'] ?? '' );
+		$clean['s3_secret_access_key'] = $this->encrypt_secret_or_keep( $s3_secret, $current['s3_secret_access_key'] ?? '' );
 
 		return $clean;
+	}
+
+	/**
+	 * Encrypt a submitted secret without ever falling back to plaintext.
+	 *
+	 * @param string $secret  Submitted secret.
+	 * @param string $current Existing encrypted secret.
+	 * @return string
+	 */
+	private function encrypt_secret_or_keep( $secret, $current ) {
+		if ( '' === $secret ) {
+			return (string) $current;
+		}
+
+		$encrypted = $this->crypto->encrypt( $secret );
+		if ( is_wp_error( $encrypted ) ) {
+			add_settings_error( 'zoecloud_settings', $encrypted->get_error_code(), $encrypted->get_error_message(), 'error' );
+
+			return (string) $current;
+		}
+
+		return $encrypted;
 	}
 
 	/**
@@ -233,6 +251,7 @@ class ZoeCloud_Admin {
 					'validBackup'       => __( 'Backup verified and ready to restore.', 'zoe-cloud' ),
 					'unknownError'      => __( 'The request could not be completed.', 'zoe-cloud' ),
 					'download'          => __( 'Download', 'zoe-cloud' ),
+					'downloadVerify'    => __( 'Download & verify', 'zoe-cloud' ),
 					'restore'           => __( 'Restore', 'zoe-cloud' ),
 					'lock'              => __( 'Lock', 'zoe-cloud' ),
 					'unlock'            => __( 'Unlock', 'zoe-cloud' ),
@@ -301,22 +320,23 @@ class ZoeCloud_Admin {
 		$settings       = wp_parse_args(
 			get_option( 'zoecloud_settings', array() ),
 			array(
-				'schedule_enabled'  => 0,
-				'storage_provider'  => 'r2',
-				'r2_account_id'     => '',
-				'r2_access_key_id'  => '',
-				'r2_bucket'         => '',
-				'r2_prefix'         => 'zoe-cloud',
-				's3_access_key_id'  => '',
-				's3_bucket'         => '',
-				's3_region'         => 'us-east-1',
-				's3_prefix'         => '',
-				'retention_limit'   => 10,
-				'schedule'          => 'daily',
-				'schedule_time'     => '02:00',
-				'schedule_weekday'  => 'monday',
-				'auto_upload_cloud' => 1,
-				'excluded_paths'    => array(),
+				'schedule_enabled'    => 0,
+				'storage_provider'    => 'r2',
+				'r2_account_id'       => '',
+				'r2_access_key_id'    => '',
+				'r2_bucket'           => '',
+				'r2_prefix'           => 'zoe-cloud',
+				's3_access_key_id'    => '',
+				's3_bucket'           => '',
+				's3_region'           => 'us-east-1',
+				's3_prefix'           => '',
+				'retention_limit'     => 10,
+				'schedule'            => 'daily',
+				'schedule_time'       => '02:00',
+				'schedule_weekday'    => 'monday',
+				'auto_upload_cloud'   => 1,
+				'excluded_paths'      => array(),
+				'delete_on_uninstall' => 0,
 			)
 		);
 		$excluded_paths = is_array( $settings['excluded_paths'] ) ? implode( "\n", $settings['excluded_paths'] ) : (string) $settings['excluded_paths'];
@@ -346,6 +366,7 @@ class ZoeCloud_Admin {
 			<main>
 				<section id="zoecloud-panel-overview" class="zoecloud-tab-panel is-active" role="tabpanel" aria-labelledby="zoecloud-tab-overview" data-zoecloud-panel="overview">
 					<div class="zoecloud-section-heading"><div><p class="zoecloud-eyebrow"><?php esc_html_e( 'Protection at a glance', 'zoe-cloud' ); ?></p><h1><?php esc_html_e( 'Your recovery status', 'zoe-cloud' ); ?></h1></div><button type="button" class="button button-primary zoecloud-primary-action" data-zoecloud-go="backups"><?php esc_html_e( 'Create backup', 'zoe-cloud' ); ?></button></div>
+					<article id="zoecloud-onboarding" class="zoecloud-card"><div class="zoecloud-card-heading"><div><p class="zoecloud-eyebrow"><?php esc_html_e( 'Start here', 'zoe-cloud' ); ?></p><h2><?php esc_html_e( 'Create your first verified recovery point', 'zoe-cloud' ); ?></h2><p><?php esc_html_e( 'Review server health, optionally connect R2 or S3, then create a backup. ZoeCloud verifies every archive before it can be restored.', 'zoe-cloud' ); ?></p></div><button type="button" class="button button-primary" data-zoecloud-go="backups"><?php esc_html_e( 'Create first backup', 'zoe-cloud' ); ?></button></div></article>
 					<div class="zoecloud-summary-grid">
 						<article class="zoecloud-summary-card"><span><?php esc_html_e( 'Latest backup', 'zoe-cloud' ); ?></span><strong id="zoecloud-summary-latest">—</strong><small id="zoecloud-summary-latest-detail"><?php esc_html_e( 'Loading…', 'zoe-cloud' ); ?></small></article>
 						<article class="zoecloud-summary-card"><span><?php esc_html_e( 'Next automatic backup', 'zoe-cloud' ); ?></span><strong id="zoecloud-summary-next">—</strong><small id="zoecloud-summary-timezone"></small></article>
@@ -380,12 +401,13 @@ class ZoeCloud_Admin {
 																								<?php
 																								foreach ( array( 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday' ) as $day ) :
 																									?>
-																								<option value="<?php echo esc_attr( $day ); ?>" <?php selected( $settings['schedule_weekday'], $day ); ?>><?php echo esc_html( ucfirst( $day ) ); ?></option><?php endforeach; ?></select></label><label><?php esc_html_e( 'Retention', 'zoe-cloud' ); ?><input type="number" name="zoecloud_settings[retention_limit]" min="1" value="<?php echo esc_attr( $settings['retention_limit'] ); ?>"></label></div><label class="zoecloud-toggle"><input type="checkbox" name="zoecloud_settings[auto_upload_cloud]" value="1" <?php checked( $settings['auto_upload_cloud'], 1 ); ?>><span><?php esc_html_e( 'Upload scheduled backups to cloud', 'zoe-cloud' ); ?></span></label><label class="zoecloud-field"><?php esc_html_e( 'Excluded paths', 'zoe-cloud' ); ?><textarea name="zoecloud_settings[excluded_paths]" class="large-text code" rows="6"><?php echo esc_textarea( $excluded_paths ); ?></textarea><small><?php esc_html_e( 'One path per line, relative to the WordPress root.', 'zoe-cloud' ); ?></small></label><?php submit_button( __( 'Save automation', 'zoe-cloud' ) ); ?></form></article>
+																												<option value="<?php echo esc_attr( $day ); ?>" <?php selected( $settings['schedule_weekday'], $day ); ?>><?php echo esc_html( ucfirst( $day ) ); ?></option><?php endforeach; ?></select></label><label><?php esc_html_e( 'Retention', 'zoe-cloud' ); ?><input type="number" name="zoecloud_settings[retention_limit]" min="1" value="<?php echo esc_attr( $settings['retention_limit'] ); ?>"></label></div><label class="zoecloud-toggle"><input type="checkbox" name="zoecloud_settings[auto_upload_cloud]" value="1" <?php checked( $settings['auto_upload_cloud'], 1 ); ?>><span><?php esc_html_e( 'Upload scheduled backups to cloud', 'zoe-cloud' ); ?></span></label><label class="zoecloud-field"><?php esc_html_e( 'Excluded paths', 'zoe-cloud' ); ?><textarea name="zoecloud_settings[excluded_paths]" class="large-text code" rows="6"><?php echo esc_textarea( $excluded_paths ); ?></textarea><small><?php esc_html_e( 'One path per line, relative to the WordPress root.', 'zoe-cloud' ); ?></small></label><details class="zoecloud-details"><summary><?php esc_html_e( 'Uninstall behavior', 'zoe-cloud' ); ?></summary><label class="zoecloud-toggle"><input type="checkbox" name="zoecloud_settings[delete_on_uninstall]" value="1" <?php checked( $settings['delete_on_uninstall'], 1 ); ?>><span><?php esc_html_e( 'Permanently delete ZoeCloud backups and data when the plugin is uninstalled', 'zoe-cloud' ); ?></span></label><p><?php esc_html_e( 'Disabled by default to prevent accidental backup loss.', 'zoe-cloud' ); ?></p></details><?php submit_button( __( 'Save automation', 'zoe-cloud' ) ); ?></form></article>
 				</section>
 
 				<section id="zoecloud-panel-storage" class="zoecloud-tab-panel" role="tabpanel" aria-labelledby="zoecloud-tab-storage" data-zoecloud-panel="storage" hidden>
 					<div class="zoecloud-section-heading"><div><p class="zoecloud-eyebrow"><?php esc_html_e( 'Off-site protection', 'zoe-cloud' ); ?></p><h1><?php esc_html_e( 'Cloud storage', 'zoe-cloud' ); ?></h1></div><span class="zoecloud-provider-status <?php echo $cloud_status['configured'] ? 'is-connected' : ''; ?>"><?php echo esc_html( $cloud_status['configured'] ? __( 'Configured', 'zoe-cloud' ) : __( 'Not configured', 'zoe-cloud' ) ); ?></span></div>
 					<article class="zoecloud-card"><form method="post" action="options.php"><?php settings_fields( 'zoecloud_settings' ); ?><input type="hidden" name="zoecloud_settings[settings_section]" value="storage"><label class="zoecloud-field"><?php esc_html_e( 'Provider', 'zoe-cloud' ); ?><select id="zoecloud_storage_provider" name="zoecloud_settings[storage_provider]"><option value="r2" <?php selected( $settings['storage_provider'], 'r2' ); ?>>Cloudflare R2</option><option value="s3" <?php selected( $settings['storage_provider'], 's3' ); ?>>AWS S3</option></select></label><div class="zoecloud-provider-fields zoecloud-form-grid" data-zoecloud-provider-fields="r2"><label>R2 Account ID<input type="text" name="zoecloud_settings[r2_account_id]" value="<?php echo esc_attr( $settings['r2_account_id'] ); ?>"></label><label>Access Key ID<input type="text" name="zoecloud_settings[r2_access_key_id]" value="<?php echo esc_attr( $settings['r2_access_key_id'] ); ?>"></label><label>Secret Access Key<input type="password" name="zoecloud_settings[r2_secret_access_key]" autocomplete="new-password"><small><?php esc_html_e( 'Leave blank to keep the saved secret.', 'zoe-cloud' ); ?></small></label><label><?php esc_html_e( 'Bucket', 'zoe-cloud' ); ?><input type="text" name="zoecloud_settings[r2_bucket]" value="<?php echo esc_attr( $settings['r2_bucket'] ); ?>"></label><label><?php esc_html_e( 'Prefix', 'zoe-cloud' ); ?><input type="text" name="zoecloud_settings[r2_prefix]" value="<?php echo esc_attr( $settings['r2_prefix'] ); ?>"></label></div><div class="zoecloud-provider-fields zoecloud-form-grid" data-zoecloud-provider-fields="s3" hidden><label>Access Key ID<input type="text" name="zoecloud_settings[s3_access_key_id]" value="<?php echo esc_attr( $settings['s3_access_key_id'] ); ?>"></label><label>Secret Access Key<input type="password" name="zoecloud_settings[s3_secret_access_key]" autocomplete="new-password"><small><?php esc_html_e( 'Leave blank to keep the saved secret.', 'zoe-cloud' ); ?></small></label><label><?php esc_html_e( 'Bucket', 'zoe-cloud' ); ?><input type="text" name="zoecloud_settings[s3_bucket]" value="<?php echo esc_attr( $settings['s3_bucket'] ); ?>"></label><label><?php esc_html_e( 'Region', 'zoe-cloud' ); ?><input type="text" name="zoecloud_settings[s3_region]" value="<?php echo esc_attr( $settings['s3_region'] ); ?>"></label><label><?php esc_html_e( 'Prefix', 'zoe-cloud' ); ?><input type="text" name="zoecloud_settings[s3_prefix]" value="<?php echo esc_attr( $settings['s3_prefix'] ); ?>"></label></div><div class="zoecloud-actions"><?php submit_button( __( 'Save storage', 'zoe-cloud' ), 'primary', 'submit', false ); ?><button type="button" class="button" id="zoecloud-test-storage"><?php esc_html_e( 'Test connection', 'zoe-cloud' ); ?></button><div id="zoecloud-storage-feedback" class="zoecloud-feedback" aria-live="polite"></div></div></form></article>
+					<article class="zoecloud-card zoecloud-list"><div class="zoecloud-card-heading"><div><h2><?php esc_html_e( 'Cloud recovery points', 'zoe-cloud' ); ?></h2><p><?php esc_html_e( 'Loading this list contacts the configured provider. Downloaded archives are verified before they become restorable.', 'zoe-cloud' ); ?></p></div><button type="button" class="button" id="zoecloud-load-cloud"><?php esc_html_e( 'Load cloud backups', 'zoe-cloud' ); ?></button></div><div class="zoecloud-table-wrap"><table class="widefat zoecloud-table"><thead><tr><th><?php esc_html_e( 'Object', 'zoe-cloud' ); ?></th><th><?php esc_html_e( 'Modified', 'zoe-cloud' ); ?></th><th><?php esc_html_e( 'Size', 'zoe-cloud' ); ?></th><th><?php esc_html_e( 'Action', 'zoe-cloud' ); ?></th></tr></thead><tbody id="zoecloud-cloud-backups"><tr><td colspan="4"><?php esc_html_e( 'Load the remote list when you need to recover from cloud storage.', 'zoe-cloud' ); ?></td></tr></tbody></table></div><div id="zoecloud-cloud-feedback" class="zoecloud-feedback" aria-live="polite"></div></article>
 				</section>
 
 				<section id="zoecloud-panel-activity" class="zoecloud-tab-panel" role="tabpanel" aria-labelledby="zoecloud-tab-activity" data-zoecloud-panel="activity" hidden>
@@ -393,7 +415,7 @@ class ZoeCloud_Admin {
 				</section>
 			</main>
 
-			<dialog id="zoecloud-restore-dialog" class="zoecloud-dialog" aria-labelledby="zoecloud-restore-title"><form method="dialog"><button class="zoecloud-dialog-close" value="cancel" aria-label="<?php esc_attr_e( 'Close', 'zoe-cloud' ); ?>"><span class="dashicons dashicons-no-alt"></span></button></form><div class="zoecloud-dialog-content"><p class="zoecloud-eyebrow"><?php esc_html_e( 'Protected restore', 'zoe-cloud' ); ?></p><h2 id="zoecloud-restore-title"><?php esc_html_e( 'Review recovery point', 'zoe-cloud' ); ?></h2><div id="zoecloud-restore-plan" class="zoecloud-restore-plan" aria-live="polite"></div><div class="zoecloud-form-grid"><label><?php esc_html_e( 'Search URL', 'zoe-cloud' ); ?><input type="url" id="zoecloud-restore-search" value="<?php echo esc_attr( home_url() ); ?>"></label><label><?php esc_html_e( 'Replace URL', 'zoe-cloud' ); ?><input type="url" id="zoecloud-restore-replace" value="<?php echo esc_attr( home_url() ); ?>"></label></div><label class="zoecloud-toggle"><input type="checkbox" id="zoecloud-safety-backup" checked><span><?php esc_html_e( 'Create a full local safety backup first', 'zoe-cloud' ); ?></span></label><label class="zoecloud-field"><?php /* translators: %s: Current site hostname. */ printf( esc_html__( 'Type %s to confirm', 'zoe-cloud' ), '<strong>' . esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ) . '</strong>' ); ?><input type="text" id="zoecloud-restore-hostname" autocomplete="off"></label><div id="zoecloud-restore-feedback" class="zoecloud-feedback" aria-live="polite"></div><div class="zoecloud-dialog-actions"><button type="button" class="button" id="zoecloud-cancel-restore"><?php esc_html_e( 'Cancel', 'zoe-cloud' ); ?></button><button type="button" class="button button-primary" id="zoecloud-run-restore" disabled><?php esc_html_e( 'Create safety backup & restore', 'zoe-cloud' ); ?></button></div></div></dialog>
+			<dialog id="zoecloud-restore-dialog" class="zoecloud-dialog" aria-labelledby="zoecloud-restore-title"><form method="dialog"><button class="zoecloud-dialog-close" value="cancel" aria-label="<?php esc_attr_e( 'Close', 'zoe-cloud' ); ?>"><span class="dashicons dashicons-no-alt"></span></button></form><div class="zoecloud-dialog-content"><p class="zoecloud-eyebrow"><?php esc_html_e( 'Protected restore', 'zoe-cloud' ); ?></p><h2 id="zoecloud-restore-title"><?php esc_html_e( 'Review recovery point', 'zoe-cloud' ); ?></h2><div id="zoecloud-restore-plan" class="zoecloud-restore-plan" aria-live="polite"></div><div class="zoecloud-form-grid"><label><?php esc_html_e( 'Search URL', 'zoe-cloud' ); ?><input type="url" id="zoecloud-restore-search" value="<?php echo esc_attr( home_url() ); ?>"></label><label><?php esc_html_e( 'Replace URL', 'zoe-cloud' ); ?><input type="url" id="zoecloud-restore-replace" value="<?php echo esc_attr( home_url() ); ?>"></label></div><p><?php esc_html_e( 'ZoeCloud will create and verify a full local safety backup before changing the site.', 'zoe-cloud' ); ?></p><label class="zoecloud-field"><?php /* translators: %s: Current site hostname. */ printf( esc_html__( 'Type %s to confirm', 'zoe-cloud' ), '<strong>' . esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ) . '</strong>' ); ?><input type="text" id="zoecloud-restore-hostname" autocomplete="off"></label><div id="zoecloud-restore-feedback" class="zoecloud-feedback" aria-live="polite"></div><div class="zoecloud-dialog-actions"><button type="button" class="button" id="zoecloud-cancel-restore"><?php esc_html_e( 'Cancel', 'zoe-cloud' ); ?></button><button type="button" class="button button-primary" id="zoecloud-run-restore" disabled><?php esc_html_e( 'Create safety backup & restore', 'zoe-cloud' ); ?></button></div></div></dialog>
 		</div>
 		<?php
 	}

@@ -21,6 +21,34 @@ class ZoeCloud_Backup_Manager {
 	private $cloud_service;
 
 	/**
+	 * Backup metadata repository.
+	 *
+	 * @var ZoeCloud_Backup_Repository
+	 */
+	private $backup_repository;
+
+	/**
+	 * Durable job repository.
+	 *
+	 * @var ZoeCloud_Job_Repository
+	 */
+	private $job_repository;
+
+	/**
+	 * Private storage service.
+	 *
+	 * @var ZoeCloud_Storage
+	 */
+	private $storage;
+
+	/**
+	 * Active lease tokens keyed by job UUID.
+	 *
+	 * @var array
+	 */
+	private $leases = array();
+
+	/**
 	 * Number of rows read per database batch.
 	 *
 	 * @var int
@@ -51,174 +79,37 @@ class ZoeCloud_Backup_Manager {
 	/**
 	 * Constructor.
 	 *
-	 * @param ZoeCloud_R2_Service $cloud_service Cloud service.
+	 * @param ZoeCloud_R2_Service        $cloud_service      Cloud service.
+	 * @param ZoeCloud_Backup_Repository $backup_repository Backup repository.
+	 * @param ZoeCloud_Job_Repository    $job_repository    Job repository.
+	 * @param ZoeCloud_Storage           $storage           Private storage.
 	 */
-	public function __construct( ZoeCloud_R2_Service $cloud_service ) {
-		$this->cloud_service = $cloud_service;
+	public function __construct( ZoeCloud_R2_Service $cloud_service, $backup_repository = null, $job_repository = null, $storage = null ) {
+		$this->cloud_service     = $cloud_service;
+		$this->backup_repository = $backup_repository instanceof ZoeCloud_Backup_Repository ? $backup_repository : new ZoeCloud_Backup_Repository();
+		$this->job_repository    = $job_repository instanceof ZoeCloud_Job_Repository ? $job_repository : new ZoeCloud_Job_Repository();
+		$this->storage           = $storage instanceof ZoeCloud_Storage ? $storage : new ZoeCloud_Storage();
 	}
 
 	/**
-	 * Create a full site backup.
+	 * Queue a backup through the durable job engine.
 	 *
+	 * @deprecated 1.0.0 Use enqueue_backup().
 	 * @param array $args Backup arguments.
 	 * @return array|WP_Error
 	 */
 	public function create_backup( array $args = array() ) {
-		$job_id    = isset( $args['job_id'] ) ? sanitize_key( $args['job_id'] ) : '';
-		$preflight = $this->get_preflight_status();
+		_deprecated_function( __METHOD__, '1.0.0', 'ZoeCloud_Backup_Manager::enqueue_backup' );
 
-		if ( ! $preflight['ready'] ) {
-			if ( $job_id ) {
-				$this->update_job( $job_id, 'failed', 100, __( 'Server requirements are not met for backups.', 'zoe-cloud' ) );
-			}
-
-			return new WP_Error( 'zoecloud_preflight_failed', __( 'Server requirements are not met for backups.', 'zoe-cloud' ), $preflight );
-		}
-
-		if ( $job_id ) {
-			$this->update_job( $job_id, 'running', 5, __( 'Preparing backup.', 'zoe-cloud' ) );
-		}
-
-		$args     = wp_parse_args(
-			$args,
-			array(
-				'include_core' => false,
-				'upload_drive' => true,
-			)
-		);
-		$settings = $this->get_settings();
-
-		$domain       = wp_parse_url( home_url(), PHP_URL_HOST );
-		$timestamp    = gmdate( 'Y-m-d-H-i' );
-		$slug         = sanitize_title_with_dashes( (string) $domain );
-		$filename     = sprintf( 'zoe-cloud-backup-%1$s-%2$s.zip', $slug, $timestamp );
-		$storage_dir  = $this->get_storage_dir();
-		$working_dir  = trailingslashit( $storage_dir ) . 'tmp-' . wp_generate_password( 12, false, false );
-		$archive_path = trailingslashit( $storage_dir ) . $filename;
-
-		wp_mkdir_p( $working_dir );
-
-		$manifest = array(
-			'plugin_version'       => ZOECLOUD_VERSION,
-			'generated_at'         => gmdate( 'c' ),
-			'domain'               => (string) $domain,
-			'home_url'             => home_url(),
-			'site_url'             => site_url(),
-			'include_core'         => (bool) $args['include_core'],
-			'wordpress'            => get_bloginfo( 'version' ),
-			'exclusions'           => $settings['excluded_paths'],
-			'files_count'          => 0,
-			'files_size'           => 0,
-			'database_tables'      => 0,
-			'database_rows'        => 0,
-			'database_table_names' => array(),
-		);
-
-		$database_result = $this->export_database( $working_dir . '/database.sql' );
-
-		if ( is_wp_error( $database_result ) ) {
-			$this->cleanup_directory( $working_dir );
-			if ( $job_id ) {
-				$this->update_job( $job_id, 'failed', 100, $database_result->get_error_message() );
-			}
-			return $database_result;
-		}
-
-		if ( $job_id ) {
-			$this->update_job( $job_id, 'running', 35, __( 'Database exported.', 'zoe-cloud' ) );
-		}
-
-		$manifest['database_tables']      = $database_result['tables'];
-		$manifest['database_rows']        = $database_result['rows'];
-		$manifest['database_table_names'] = $database_result['table_names'];
-
-		file_put_contents( $working_dir . '/manifest.json', wp_json_encode( $manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
-
-		$zip = new ZipArchive();
-
-		if ( true !== $zip->open( $archive_path, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {
-			$this->cleanup_directory( $working_dir );
-			if ( $job_id ) {
-				$this->update_job( $job_id, 'failed', 100, __( 'Could not create the backup archive.', 'zoe-cloud' ) );
-			}
-			return new WP_Error( 'zoecloud_zip_failed', __( 'Could not create the backup archive.', 'zoe-cloud' ) );
-		}
-
-		if ( $job_id ) {
-			$this->update_job( $job_id, 'running', 45, __( 'Adding files to archive.', 'zoe-cloud' ) );
-		}
-
-		$zip->addEmptyDir( 'files' );
-		$excluded_roots = $this->build_excluded_roots( $storage_dir, $settings['excluded_paths'] );
-		$file_stats     = $this->add_path_to_zip( $zip, WP_CONTENT_DIR, 'files/wp-content', $excluded_roots );
-
-		if ( ! empty( $args['include_core'] ) ) {
-			$core_stats           = $this->add_core_to_zip( $zip, array_merge( $excluded_roots, array( wp_normalize_path( WP_CONTENT_DIR ) ) ) );
-			$file_stats['count'] += $core_stats['count'];
-			$file_stats['size']  += $core_stats['size'];
-		}
-
-		$manifest['files_count'] = $file_stats['count'];
-		$manifest['files_size']  = $file_stats['size'];
-		file_put_contents( $working_dir . '/manifest.json', wp_json_encode( $manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
-
-		$zip->addFile( $working_dir . '/database.sql', 'database.sql' );
-		$zip->addFile( $working_dir . '/manifest.json', 'manifest.json' );
-		$zip->close();
-		$this->cleanup_directory( $working_dir );
-
-		if ( $job_id ) {
-			$this->update_job( $job_id, 'running', 80, __( 'Archive created.', 'zoe-cloud' ) );
-		}
-
-		$record = array(
-			'id'           => wp_generate_uuid4(),
-			'created_at'   => current_time( 'mysql', true ),
-			'filename'     => $filename,
-			'path'         => $archive_path,
-			'download_url' => $this->build_download_url( $filename ),
-			'size'         => file_exists( $archive_path ) ? filesize( $archive_path ) : 0,
-			'manifest'     => $manifest,
-			'cloud'        => null,
-		);
-
-		if ( ! empty( $args['upload_drive'] ) ) {
-			if ( $job_id ) {
-				$this->update_job( $job_id, 'running', 85, __( 'Uploading backup to cloud storage.', 'zoe-cloud' ) );
-			}
-
-			$cloud_upload = $this->cloud_service->upload_backup( $archive_path, $manifest );
-
-			if ( ! is_wp_error( $cloud_upload ) ) {
-				$record['cloud'] = $cloud_upload;
-			} else {
-				$record['cloud_error'] = $cloud_upload->get_error_message();
-			}
-		}
-
-		$this->store_record( $record );
-		$this->apply_retention_policy();
-
-		if ( $job_id ) {
-			$this->update_job( $job_id, 'completed', 100, __( 'Backup completed.', 'zoe-cloud' ), array( 'backup_id' => $record['id'] ) );
-		}
-
-		return $record;
+		return $this->enqueue_backup( $args );
 	}
-
 	/**
 	 * List stored backups.
 	 *
 	 * @return array
 	 */
 	public function list_backups() {
-		$records = get_option( 'zoecloud_backups', array() );
-
-		if ( ! is_array( $records ) ) {
-			return array();
-		}
-
-		return array_values( array_map( array( $this, 'normalize_backup_record' ), $records ) );
+		return array_values( array_map( array( $this, 'normalize_backup_record' ), $this->backup_repository->all() ) );
 	}
 
 	/**
@@ -233,8 +124,9 @@ class ZoeCloud_Backup_Manager {
 		$record['scope']        = sanitize_key( $record['scope'] ?? ( ! empty( $manifest['include_core'] ) ? 'full' : 'site_data' ) );
 		$record['locked']       = ! empty( $record['locked'] );
 		$record['checksum']     = (string) ( $record['checksum'] ?? '' );
-		$record['verified_at']  = (string) ( $record['verified_at'] ?? '' );
-		$record['cloud_status'] = ! empty( $record['cloud'] ) ? 'uploaded' : ( ! empty( $record['cloud_error'] ) ? 'failed' : 'local' );
+		$record['verified_at']  = (string) ( $record['verified_at'] ?? ( 'verified' === ( $record['verification_status'] ?? '' ) ? ( $record['updated_at'] ?? '' ) : '' ) );
+		$record['cloud_status'] = sanitize_key( $record['cloud_status'] ?? ( ! empty( $record['cloud'] ) ? 'available' : ( ! empty( $record['cloud_error'] ) ? 'failed' : 'local' ) ) );
+		$record['download_url'] = $this->build_download_url( $record['id'] );
 
 		return $record;
 	}
@@ -252,43 +144,28 @@ class ZoeCloud_Backup_Manager {
 			return new WP_Error( 'zoecloud_preflight_failed', __( 'Server requirements are not met for backups.', 'zoe-cloud' ), $preflight );
 		}
 
-		$job = array(
-			'id'         => wp_generate_uuid4(),
-			'type'       => 'backup',
-			'status'     => 'queued',
-			'progress'   => 0,
-			'message'    => __( 'Backup queued.', 'zoe-cloud' ),
-			'stage'      => 'init',
-			'args'       => array(
-				'include_core' => ! empty( $args['include_core'] ),
-				'upload_cloud' => ! empty( $args['upload_cloud'] ) || ! empty( $args['upload_drive'] ),
-				'source'       => in_array( $args['source'] ?? 'manual', array( 'manual', 'scheduled', 'safety' ), true ) ? $args['source'] : 'manual',
-				'scope'        => ! empty( $args['include_core'] ) ? 'full' : 'site_data',
-			),
-			'state'      => array(),
-			'created_at' => current_time( 'mysql', true ),
-			'updated_at' => current_time( 'mysql', true ),
-			'result'     => null,
-			'events'     => array(
-				array(
-					'time'    => current_time( 'mysql', true ),
-					'stage'   => 'init',
-					'status'  => 'queued',
-					'message' => __( 'Backup queued.', 'zoe-cloud' ),
-				),
-			),
+		$payload = array(
+			'include_core' => ! empty( $args['include_core'] ),
+			'upload_cloud' => ! empty( $args['upload_cloud'] ) || ! empty( $args['upload_drive'] ),
+			'source'       => in_array( $args['source'] ?? 'manual', array( 'manual', 'scheduled', 'safety' ), true ) ? $args['source'] : 'manual',
+			'scope'        => ! empty( $args['include_core'] ) ? 'full' : 'site_data',
 		);
+		$job     = $this->job_repository->create( 'backup', $payload );
 
-		$jobs               = $this->list_jobs();
-		$jobs[ $job['id'] ] = $job;
-		$this->save_jobs( $jobs );
+		if ( empty( $job ) ) {
+			return new WP_Error( 'zoecloud_job_create_failed', __( 'Could not create the backup job.', 'zoe-cloud' ) );
+		}
 
 		$scheduled = wp_schedule_single_event( time() + 1, 'zoecloud_run_backup_job', array( $job['id'] ) );
 
 		if ( ! $scheduled ) {
-			unset( $jobs[ $job['id'] ] );
-			$this->save_jobs( $jobs );
-
+			$this->job_repository->update(
+				$job['id'],
+				array(
+					'status'     => 'failed',
+					'last_error' => __( 'Could not schedule the backup job.', 'zoe-cloud' ),
+				)
+			);
 			return new WP_Error( 'zoecloud_job_schedule_failed', __( 'Could not schedule the backup job.', 'zoe-cloud' ) );
 		}
 
@@ -304,16 +181,19 @@ class ZoeCloud_Backup_Manager {
 	 * @return void
 	 */
 	public function run_backup_job( $job_id, $max_steps = 25, $time_budget = 20 ) {
-		$lock_key = 'zoecloud_job_lock_' . sanitize_key( $job_id );
-
-		if ( get_transient( $lock_key ) ) {
+		$job_id = sanitize_text_field( $job_id );
+		$token  = $this->job_repository->acquire( $job_id, max( 90, absint( $time_budget ) + 30 ) );
+		if ( ! $token ) {
 			return;
 		}
-
-		set_transient( $lock_key, 1, MINUTE_IN_SECONDS );
-		$this->defer_scheduling = true;
-		$started_at             = time();
-		$steps                  = 0;
+		if ( ! $this->job_repository->acquire_mutex( 'backup' ) ) {
+			$this->job_repository->release( $job_id, $token, 10 );
+			return;
+		}
+		$this->leases[ $job_id ] = $token;
+		$this->defer_scheduling  = true;
+		$started_at              = time();
+		$steps                   = 0;
 
 		do {
 			$job = $this->get_job( $job_id );
@@ -371,7 +251,9 @@ class ZoeCloud_Backup_Manager {
 			$this->schedule_next_job_run( $job_id );
 		}
 
-		delete_transient( $lock_key );
+		$this->job_repository->release( $job_id, $token );
+		$this->job_repository->release_mutex( 'backup' );
+		unset( $this->leases[ $job_id ] );
 	}
 
 	/**
@@ -380,13 +262,12 @@ class ZoeCloud_Backup_Manager {
 	 * @return array
 	 */
 	public function list_jobs() {
-		$jobs = get_option( 'zoecloud_jobs', array() );
-
-		if ( ! is_array( $jobs ) ) {
-			return array();
+		$jobs = array();
+		foreach ( $this->job_repository->all() as $job ) {
+			$jobs[ $job['id'] ] = $job;
 		}
 
-		return $this->expire_stale_jobs( $jobs );
+		return $jobs;
 	}
 
 	/**
@@ -421,17 +302,13 @@ class ZoeCloud_Backup_Manager {
 	 * @return array|WP_Error
 	 */
 	public function update_backup( $backup_id, $locked ) {
-		$records = $this->list_backups();
-
-		foreach ( $records as &$record ) {
-			if ( ( $record['id'] ?? '' ) === $backup_id ) {
-				$record['locked'] = (bool) $locked;
-				update_option( 'zoecloud_backups', $records, false );
-				return $record;
-			}
+		$record = $this->backup_repository->find( $backup_id );
+		if ( ! $record ) {
+			return new WP_Error( 'zoecloud_backup_missing', __( 'Backup file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
 		}
+		$record['locked'] = (bool) $locked;
 
-		return new WP_Error( 'zoecloud_backup_missing', __( 'Backup file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		return $this->backup_repository->save( $record );
 	}
 
 	/**
@@ -478,9 +355,7 @@ class ZoeCloud_Backup_Manager {
 	 * @return array|null
 	 */
 	public function get_job( $job_id ) {
-		$jobs = $this->list_jobs();
-
-		return isset( $jobs[ $job_id ] ) && is_array( $jobs[ $job_id ] ) ? $jobs[ $job_id ] : null;
+		return $this->job_repository->find( $job_id );
 	}
 
 	/**
@@ -510,6 +385,7 @@ class ZoeCloud_Backup_Manager {
 		$timestamp   = gmdate( 'Y-m-d-H-i' );
 		$slug        = sanitize_title_with_dashes( (string) $domain );
 		$filename    = sprintf( 'zoe-cloud-backup-%1$s-%2$s.zip', $slug, $timestamp );
+		$storage_key = $this->storage->create_archive_key();
 		$storage_dir = $this->get_storage_dir();
 		$working_dir = trailingslashit( $storage_dir ) . 'tmp-' . wp_generate_password( 12, false, false );
 
@@ -517,7 +393,8 @@ class ZoeCloud_Backup_Manager {
 			return new WP_Error( 'zoecloud_job_workspace_failed', __( 'Could not create the backup workspace.', 'zoe-cloud' ) );
 		}
 
-		$tables = $wpdb->get_col( 'SHOW TABLES' );
+		$tables = $wpdb->get_col( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wpdb->prefix ) . '%' ) );
+		$tables = array_values( array_diff( $tables, array( ZoeCloud_Schema::table( 'backups' ), ZoeCloud_Schema::table( 'jobs' ), ZoeCloud_Schema::table( 'job_events' ) ) ) );
 
 		if ( empty( $tables ) ) {
 			$this->cleanup_directory( $working_dir );
@@ -532,19 +409,36 @@ class ZoeCloud_Backup_Manager {
 		}
 
 		$manifest = array(
+			'format'               => 'zoecloud-backup',
+			'format_version'       => 2,
 			'plugin_version'       => ZOECLOUD_VERSION,
+			'display_filename'     => $filename,
 			'generated_at'         => gmdate( 'c' ),
 			'domain'               => (string) $domain,
 			'home_url'             => home_url(),
 			'site_url'             => site_url(),
+			'origin'               => array(
+				'host'      => (string) $domain,
+				'home_url'  => home_url(),
+				'site_url'  => site_url(),
+				'table_prefix' => $wpdb->prefix,
+			),
+			'scope'                => ! empty( $args['include_core'] ) ? 'full' : 'site_data',
 			'include_core'         => (bool) $args['include_core'],
 			'wordpress'            => get_bloginfo( 'version' ),
+			'requirements'         => array(
+				'wordpress'  => '6.4',
+				'php'        => '8.1',
+				'ziparchive' => true,
+			),
 			'exclusions'           => $settings['excluded_paths'],
 			'files_count'          => 0,
 			'files_size'           => 0,
 			'database_tables'      => count( $tables ),
 			'database_rows'        => 0,
 			'database_table_names' => array_values( $tables ),
+			'database_prefix'      => $wpdb->prefix,
+			'checksums'            => array(),
 		);
 
 		$state = array(
@@ -553,8 +447,10 @@ class ZoeCloud_Backup_Manager {
 			'database_file'  => $database_file,
 			'manifest_file'  => trailingslashit( $working_dir ) . 'manifest.json',
 			'filelist_file'  => trailingslashit( $working_dir ) . 'files.jsonl',
-			'archive_path'   => trailingslashit( $storage_dir ) . $filename,
+			'checksums_file' => trailingslashit( $working_dir ) . 'checksums.jsonl',
+			'archive_path'   => $this->storage->resolve( $storage_key ),
 			'filename'       => $filename,
+			'storage_key'    => $storage_key,
 			'tables'         => array_values( $tables ),
 			'table_index'    => 0,
 			'table_offset'   => 0,
@@ -612,11 +508,13 @@ class ZoeCloud_Backup_Manager {
 
 				fwrite( $handle, "DROP TABLE IF EXISTS {$table_name};\n" );
 				fwrite( $handle, $create[1] . ";\n\n" );
-				$state['table_started'] = true;
-				$state['table_offset']  = 0;
+				$state['table_started']   = true;
+				$state['table_offset']    = 0;
+				$state['table_row_count'] = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			}
 
-			$query = $wpdb->prepare( "SELECT * FROM {$table_name} LIMIT %d OFFSET %d", $this->db_batch_size, $state['table_offset'] ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$order = $this->get_table_order_clause( $table );
+			$query = $wpdb->prepare( "SELECT * FROM {$table_name}{$order} LIMIT %d OFFSET %d", $this->db_batch_size, $state['table_offset'] ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$rows  = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
 			foreach ( $rows as $row ) {
@@ -628,6 +526,10 @@ class ZoeCloud_Backup_Manager {
 			++$batches;
 
 			if ( count( $rows ) < $this->db_batch_size ) {
+				$current_count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				if ( (int) ( $state['table_row_count'] ?? $current_count ) !== $current_count ) {
+					$state['manifest']['consistency_warnings'][] = $table;
+				}
 				fwrite( $handle, "\n" );
 				++$state['table_index'];
 				$state['table_offset']  = 0;
@@ -639,7 +541,8 @@ class ZoeCloud_Backup_Manager {
 
 		if ( $state['table_index'] >= $table_count ) {
 			file_put_contents( $state['database_file'], "SET foreign_key_checks = 1;\n", FILE_APPEND );
-			$state['manifest']['database_rows'] = $state['database_rows'];
+			$state['manifest']['database_rows']             = $state['database_rows'];
+			$state['manifest']['checksums']['database.sql'] = hash_file( 'sha256', $state['database_file'] );
 			$this->write_manifest_file( $state );
 			$this->advance_job( $job['id'], 'scan_files', 40, __( 'Database exported. Scanning files.', 'zoe-cloud' ), $state );
 		} else {
@@ -661,26 +564,92 @@ class ZoeCloud_Backup_Manager {
 		$state          = $job['state'];
 		$args           = wp_parse_args( $job['args'], array( 'include_core' => false ) );
 		$excluded_roots = $this->build_excluded_roots( $state['storage_dir'], (array) $state['excluded_paths'] );
-		$handle         = fopen( $state['filelist_file'], 'wb' );
 
-		if ( false === $handle ) {
+		if ( empty( $state['scan_initialized'] ) ) {
+			$state['scan_queue'] = array(
+				array(
+					'path'    => wp_normalize_path( WP_CONTENT_DIR ),
+					'archive' => 'files/wp-content',
+				),
+			);
+			if ( ! empty( $args['include_core'] ) ) {
+				foreach ( (array) scandir( ABSPATH ) as $item ) {
+					if ( in_array( $item, array( '.', '..', 'wp-content' ), true ) ) {
+						continue;
+					}
+					$state['scan_queue'][] = array(
+						'path'    => wp_normalize_path( trailingslashit( ABSPATH ) . $item ),
+						'archive' => 'files/' . $item,
+					);
+				}
+			}
+			$state['scan_index']       = 0;
+			$state['files_count']      = 0;
+			$state['files_size']       = 0;
+			$state['scan_initialized'] = true;
+			file_put_contents( $state['filelist_file'], '' );
+			file_put_contents( $state['checksums_file'], '' );
+		}
+
+		$handle          = fopen( $state['filelist_file'], 'ab' );
+		$checksum_handle = fopen( $state['checksums_file'], 'ab' );
+
+		if ( false === $handle || false === $checksum_handle ) {
+			if ( is_resource( $handle ) ) {
+				fclose( $handle );
+			}
+			if ( is_resource( $checksum_handle ) ) {
+				fclose( $checksum_handle );
+			}
 			return new WP_Error( 'zoecloud_filelist_failed', __( 'Could not create the file list.', 'zoe-cloud' ) );
 		}
 
-		$stats = $this->write_path_filelist( $handle, WP_CONTENT_DIR, 'files/wp-content', $excluded_roots );
-
-		if ( ! empty( $args['include_core'] ) ) {
-			$core_stats      = $this->write_core_filelist( $handle, array_merge( $excluded_roots, array( wp_normalize_path( WP_CONTENT_DIR ) ) ) );
-			$stats['count'] += $core_stats['count'];
-			$stats['size']  += $core_stats['size'];
+		$processed   = 0;
+		$queue_count = count( $state['scan_queue'] );
+		while ( $state['scan_index'] < $queue_count && $processed < 250 ) {
+			$entry = $state['scan_queue'][ $state['scan_index'] ];
+			++$state['scan_index'];
+			++$processed;
+			$path = wp_normalize_path( $entry['path'] );
+			if ( $this->is_excluded_path( $path, $excluded_roots ) || is_link( $path ) || ! is_readable( $path ) ) {
+				continue;
+			}
+			if ( is_dir( $path ) ) {
+				$children = scandir( $path );
+				if ( false === $children ) {
+					continue;
+				}
+				foreach ( $children as $child ) {
+					if ( '.' === $child || '..' === $child ) {
+						continue;
+					}
+					$state['scan_queue'][] = array(
+						'path'    => $path . '/' . $child,
+						'archive' => untrailingslashit( $entry['archive'] ) . '/' . $child,
+					);
+					++$queue_count;
+				}
+				continue;
+			}
+			$this->write_filelist_entry( $handle, $path, $entry['archive'], $checksum_handle );
+			++$state['files_count'];
+			$state['files_size'] += (int) filesize( $path );
 		}
 
 		fclose( $handle );
+		fclose( $checksum_handle );
 
-		$state['files_count']             = $stats['count'];
-		$state['files_size']              = $stats['size'];
-		$state['manifest']['files_count'] = $stats['count'];
-		$state['manifest']['files_size']  = $stats['size'];
+		if ( $state['scan_index'] < $queue_count ) {
+			/* translators: %d: Number of files indexed. */
+			$this->advance_job( $job['id'], 'scan_files', 45, sprintf( __( 'Scanning files: %d indexed.', 'zoe-cloud' ), $state['files_count'] ), $state );
+
+			return $this->schedule_next_job_run( $job['id'] );
+		}
+
+		$state['manifest']['files_count']                  = $state['files_count'];
+		$state['manifest']['files_size']                   = $state['files_size'];
+		$state['manifest']['checksums']['checksums.jsonl'] = hash_file( 'sha256', $state['checksums_file'] );
+		unset( $state['scan_queue'], $state['scan_index'], $state['scan_initialized'] );
 		$this->write_manifest_file( $state );
 
 		$zip = new ZipArchive();
@@ -729,7 +698,15 @@ class ZoeCloud_Backup_Manager {
 
 			$entry = json_decode( $line, true );
 
-			if ( is_array( $entry ) && ! empty( $entry['path'] ) && ! empty( $entry['archive'] ) && file_exists( $entry['path'] ) ) {
+			if ( is_array( $entry ) && ! empty( $entry['path'] ) && ! empty( $entry['archive'] ) && is_file( $entry['path'] ) ) {
+				$unchanged = (int) filesize( $entry['path'] ) === (int) ( $entry['size'] ?? -1 )
+					&& (int) filemtime( $entry['path'] ) === (int) ( $entry['mtime'] ?? -1 )
+					&& hash_equals( (string) ( $entry['sha256'] ?? '' ), hash_file( 'sha256', $entry['path'] ) );
+				if ( ! $unchanged ) {
+					$zip->close();
+
+					return new WP_Error( 'zoecloud_source_changed', __( 'A source file changed while the backup was being created. The job will retry.', 'zoe-cloud' ) );
+				}
 				$zip->addFile( $entry['path'], $entry['archive'] );
 			}
 
@@ -769,14 +746,23 @@ class ZoeCloud_Backup_Manager {
 
 		$zip->addFile( $state['database_file'], 'database.sql' );
 		$zip->addFile( $state['manifest_file'], 'manifest.json' );
+		$zip->addFile( $state['checksums_file'], 'checksums.jsonl' );
 		$zip->close();
+		$validated = ( new ZoeCloud_Restore_Manager( $this->storage, $this->backup_repository ) )->validate_backup( $state['archive_path'] );
+		if ( is_wp_error( $validated ) ) {
+			wp_delete_file( $state['archive_path'] );
 
-		$record = array(
-			'id'           => wp_generate_uuid4(),
+			return $validated;
+		}
+
+		$record_id = wp_generate_uuid4();
+		$record    = array(
+			'id'           => $record_id,
 			'created_at'   => current_time( 'mysql', true ),
 			'filename'     => $state['filename'],
+			'storage_key'  => $state['storage_key'],
 			'path'         => $state['archive_path'],
-			'download_url' => $this->build_download_url( $state['filename'] ),
+			'download_url' => $this->build_download_url( $record_id ),
 			'size'         => file_exists( $state['archive_path'] ) ? filesize( $state['archive_path'] ) : 0,
 			'manifest'     => $state['manifest'],
 			'cloud'        => null,
@@ -846,36 +832,25 @@ class ZoeCloud_Backup_Manager {
 	 * @return true|WP_Error
 	 */
 	public function delete_backup( $backup_id ) {
-		$records = $this->list_backups();
-		$deleted = false;
-
-		foreach ( $records as $index => $record ) {
-			$matches_id       = isset( $record['id'] ) && $record['id'] === $backup_id;
-			$matches_filename = isset( $record['filename'] ) && $record['filename'] === $backup_id;
-
-			if ( ! $matches_id && ! $matches_filename ) {
-				continue;
-			}
-
-			if ( ! empty( $record['locked'] ) ) {
-				return new WP_Error( 'zoecloud_backup_locked', __( 'Unlock this backup before deleting it.', 'zoe-cloud' ), array( 'status' => 409 ) );
-			}
-
-			$delete_result = $this->delete_backup_files( $record );
-			if ( is_wp_error( $delete_result ) ) {
-				return $delete_result;
-			}
-
-			unset( $records[ $index ] );
-			$deleted = true;
-			break;
-		}
-
-		if ( ! $deleted ) {
+		$record = $this->backup_repository->find( $backup_id );
+		if ( ! $record ) {
 			return new WP_Error( 'zoecloud_backup_missing', __( 'Backup file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
 		}
+		if ( ! empty( $record['locked'] ) ) {
+			return new WP_Error( 'zoecloud_backup_locked', __( 'Unlock this backup before deleting it.', 'zoe-cloud' ), array( 'status' => 409 ) );
+		}
 
-		update_option( 'zoecloud_backups', array_values( $records ), false );
+		$record['deletion_status'] = 'deleting';
+		$this->backup_repository->save( $record );
+		$delete_result = $this->delete_backup_files( $record );
+		if ( is_wp_error( $delete_result ) ) {
+			$record['deletion_status'] = 'failed';
+			$record['last_error']      = $delete_result->get_error_message();
+			$this->backup_repository->save( $record );
+
+			return $delete_result;
+		}
+		$this->backup_repository->delete( $backup_id );
 
 		return true;
 	}
@@ -909,24 +884,21 @@ class ZoeCloud_Backup_Manager {
 			$filename  = sprintf( 'zoe-cloud-backup-%1$s-%2$s.zip', $slug, $timestamp );
 		}
 
-		$dest = trailingslashit( $storage_dir ) . $filename;
-
-		// Avoid clobbering an existing backup with the same name.
-		if ( file_exists( $dest ) ) {
-			$filename = wp_unique_filename( $storage_dir, $filename );
-			$dest     = trailingslashit( $storage_dir ) . $filename;
-		}
+		$storage_key = $this->storage->create_archive_key();
+		$dest        = $this->storage->resolve( $storage_key );
 
 		if ( ! rename( $temp_path, $dest ) ) {
 			return new WP_Error( 'zoecloud_import_move_failed', __( 'Could not move the uploaded file to the backups folder.', 'zoe-cloud' ) );
 		}
 
-		$record = array(
-			'id'           => wp_generate_uuid4(),
+		$record_id = wp_generate_uuid4();
+		$record    = array(
+			'id'           => $record_id,
 			'created_at'   => current_time( 'mysql', true ),
 			'filename'     => $filename,
+			'storage_key'  => $storage_key,
 			'path'         => $dest,
-			'download_url' => $this->build_download_url( $filename ),
+			'download_url' => $this->build_download_url( $record_id ),
 			'size'         => filesize( $dest ),
 			'manifest'     => $manifest,
 			'cloud'        => null,
@@ -966,13 +938,49 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Resolve a backup file by filename.
+	 * Resolve a backup file by ID.
 	 *
-	 * @param string $filename Archive name.
+	 * @param string $backup_id Backup UUID.
 	 * @return string
 	 */
-	public function get_backup_path( $filename ) {
-		return trailingslashit( $this->get_storage_dir() ) . basename( $filename );
+	public function get_backup_path( $backup_id ) {
+		$record = $this->backup_repository->find( $backup_id );
+
+		return $record ? $this->storage->resolve( $record['storage_key'] ) : '';
+	}
+
+	/**
+	 * Verify a stored backup's archive checksum and v2 payload.
+	 *
+	 * @param string $backup_id Backup UUID.
+	 * @return array|WP_Error
+	 */
+	public function verify_backup( $backup_id ) {
+		$record = $this->backup_repository->find( $backup_id );
+		if ( ! $record ) {
+			return new WP_Error( 'zoecloud_backup_missing', __( 'Backup file not found.', 'zoe-cloud' ), array( 'status' => 404 ) );
+		}
+		$path = $this->storage->resolve( $record['storage_key'] );
+		if ( ! is_readable( $path ) || ! preg_match( '/^[a-f0-9]{64}$/', (string) $record['checksum'] ) || ! hash_equals( $record['checksum'], hash_file( 'sha256', $path ) ) ) {
+			$record['verification_status'] = 'failed';
+			$record['last_error']          = __( 'Backup archive checksum mismatch.', 'zoe-cloud' );
+			$this->backup_repository->save( $record );
+
+			return new WP_Error( 'zoecloud_backup_checksum_mismatch', __( 'Backup archive checksum mismatch.', 'zoe-cloud' ), array( 'status' => 409 ) );
+		}
+		$validated = ( new ZoeCloud_Restore_Manager( $this->storage, $this->backup_repository ) )->validate_backup( $path );
+		if ( is_wp_error( $validated ) ) {
+			$record['verification_status'] = 'failed';
+			$record['last_error']          = $validated->get_error_message();
+			$this->backup_repository->save( $record );
+
+			return $validated;
+		}
+		$record['verification_status'] = 'verified';
+		$record['last_error']          = '';
+		$record                        = $this->backup_repository->save( $record );
+
+		return $record;
 	}
 
 	/**
@@ -987,16 +995,17 @@ class ZoeCloud_Backup_Manager {
 
 		check_admin_referer( 'zoecloud_download_backup' );
 
-		$filename = isset( $_GET['filename'] ) ? sanitize_file_name( wp_unslash( $_GET['filename'] ) ) : '';
-		$path     = $this->get_backup_path( $filename );
+		$backup_id = isset( $_GET['backup_id'] ) ? sanitize_text_field( wp_unslash( $_GET['backup_id'] ) ) : '';
+		$record    = $this->backup_repository->find( $backup_id );
+		$path      = $record ? $this->storage->resolve( $record['storage_key'] ) : '';
 
-		if ( empty( $filename ) || ! file_exists( $path ) ) {
+		if ( empty( $record ) || ! file_exists( $path ) ) {
 			wp_die( esc_html__( 'Backup file not found.', 'zoe-cloud' ), '', array( 'response' => 404 ) );
 		}
 
 		nocache_headers();
 		header( 'Content-Type: application/zip' );
-		header( 'Content-Disposition: attachment; filename="' . basename( $path ) . '"' );
+		header( 'Content-Disposition: attachment; filename="' . sanitize_file_name( $record['filename'] ) . '"' );
 		header( 'Content-Length: ' . filesize( $path ) );
 		readfile( $path );
 		exit;
@@ -1025,88 +1034,13 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Create SQL dump.
-	 *
-	 * @param string $target_file SQL path.
-	 * @return array|WP_Error
-	 */
-	private function export_database( $target_file ) {
-		global $wpdb;
-
-		$tables = $wpdb->get_col( 'SHOW TABLES' );
-
-		if ( empty( $tables ) ) {
-			return new WP_Error( 'zoecloud_db_tables_missing', __( 'No database tables were found.', 'zoe-cloud' ) );
-		}
-
-		$handle = fopen( $target_file, 'wb' );
-
-		if ( false === $handle ) {
-			return new WP_Error( 'zoecloud_db_dump_failed', __( 'Could not write the database dump.', 'zoe-cloud' ) );
-		}
-
-		$total_rows = 0;
-
-		fwrite( $handle, "-- ZoeCloud database export\nSET foreign_key_checks = 0;\n\n" );
-
-		foreach ( $tables as $table ) {
-			$table_name = $this->quote_identifier( $table );
-			$create     = $wpdb->get_row( "SHOW CREATE TABLE {$table_name}", ARRAY_N ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-
-			if ( empty( $create[1] ) ) {
-				fclose( $handle );
-				return new WP_Error( 'zoecloud_db_schema_failed', __( 'Could not export a database table schema.', 'zoe-cloud' ), array( 'table' => $table ) );
-			}
-
-			fwrite( $handle, "DROP TABLE IF EXISTS {$table_name};\n" );
-			fwrite( $handle, $create[1] . ";\n\n" );
-
-			$offset = 0;
-
-			do {
-				$query = $wpdb->prepare( "SELECT * FROM {$table_name} LIMIT %d OFFSET %d", $this->db_batch_size, $offset ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				$rows  = $wpdb->get_results( $query, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-				foreach ( $rows as $row ) {
-					$this->write_insert_statement( $handle, $table_name, $row );
-					++$total_rows;
-				}
-
-				$offset   += $this->db_batch_size;
-				$row_count = count( $rows );
-			} while ( $row_count === $this->db_batch_size );
-
-			fwrite( $handle, "\n" );
-		}
-
-		fwrite( $handle, "SET foreign_key_checks = 1;\n" );
-		fclose( $handle );
-
-		return array(
-			'tables'      => count( $tables ),
-			'rows'        => $total_rows,
-			'table_names' => array_values( $tables ),
-		);
-	}
-
-	/**
 	 * Store a backup record.
 	 *
 	 * @param array $record Backup metadata.
 	 * @return void
 	 */
 	private function store_record( array $record ) {
-		$records   = $this->list_backups();
-		$records[] = $record;
-
-		usort(
-			$records,
-			static function ( $left, $right ) {
-				return strcmp( $right['created_at'], $left['created_at'] );
-			}
-		);
-
-		update_option( 'zoecloud_backups', $records, false );
+		$this->backup_repository->save( $record );
 	}
 
 	/**
@@ -1120,23 +1054,20 @@ class ZoeCloud_Backup_Manager {
 	 * @return void
 	 */
 	private function update_job( $job_id, $status, $progress, $message, array $result = array() ) {
-		$jobs = $this->list_jobs();
-
-		if ( empty( $jobs[ $job_id ] ) ) {
+		$job = $this->get_job( $job_id );
+		if ( empty( $job ) ) {
 			return;
 		}
-
-		$jobs[ $job_id ]['status']     = sanitize_key( $status );
-		$jobs[ $job_id ]['progress']   = max( 0, min( 100, absint( $progress ) ) );
-		$jobs[ $job_id ]['message']    = (string) $message;
-		$jobs[ $job_id ]['updated_at'] = current_time( 'mysql', true );
-		$this->append_job_event( $jobs[ $job_id ], $jobs[ $job_id ]['stage'] ?? '', $status, $message );
-
+		$changes = array(
+			'status'     => $status,
+			'progress'   => $progress,
+			'last_error' => 'failed' === $status ? sanitize_text_field( $message ) : null,
+		);
 		if ( ! empty( $result ) ) {
-			$jobs[ $job_id ]['result'] = $result;
+			$changes['result'] = $result;
 		}
-
-		$this->save_jobs( $jobs );
+		$this->job_repository->update( $job_id, $changes );
+		$this->job_repository->event( $job_id, $job['stage'] ?? '', $status, $message );
 	}
 
 	/**
@@ -1151,25 +1082,20 @@ class ZoeCloud_Backup_Manager {
 	 * @return void
 	 */
 	private function advance_job( $job_id, $stage, $progress, $message, array $state, array $result = array() ) {
-		$jobs = $this->list_jobs();
-
-		if ( empty( $jobs[ $job_id ] ) ) {
+		if ( ! $this->get_job( $job_id ) ) {
 			return;
 		}
-
-		$jobs[ $job_id ]['status']     = 'running';
-		$jobs[ $job_id ]['stage']      = sanitize_key( $stage );
-		$jobs[ $job_id ]['progress']   = max( 0, min( 100, absint( $progress ) ) );
-		$jobs[ $job_id ]['message']    = (string) $message;
-		$jobs[ $job_id ]['state']      = $state;
-		$jobs[ $job_id ]['updated_at'] = current_time( 'mysql', true );
-		$this->append_job_event( $jobs[ $job_id ], $stage, 'running', $message );
-
+		$changes = array(
+			'status'   => 'running',
+			'stage'    => $stage,
+			'progress' => $progress,
+			'state'    => $state,
+		);
 		if ( ! empty( $result ) ) {
-			$jobs[ $job_id ]['result'] = $result;
+			$changes['result'] = $result;
 		}
-
-		$this->save_jobs( $jobs );
+		$this->job_repository->update( $job_id, $changes );
+		$this->job_repository->event( $job_id, $stage, 'running', $message );
 	}
 
 	/**
@@ -1201,6 +1127,20 @@ class ZoeCloud_Backup_Manager {
 	 */
 	private function fail_job( $job_id, $message ) {
 		$job = $this->get_job( $job_id );
+		if ( $job && (int) $job['attempts'] < (int) $job['max_attempts'] ) {
+			$delay = min( HOUR_IN_SECONDS, 30 * ( 2 ** max( 0, (int) $job['attempts'] - 1 ) ) );
+			$this->job_repository->update(
+				$job_id,
+				array(
+					'status'     => 'waiting',
+					'run_after'  => gmdate( 'Y-m-d H:i:s', time() + $delay ),
+					'last_error' => sanitize_text_field( $message ),
+				)
+			);
+			$this->job_repository->event( $job_id, $job['stage'] ?? '', 'waiting', __( 'The job will be retried after a temporary failure.', 'zoe-cloud' ) );
+
+			return;
+		}
 
 		if ( ! empty( $job['state']['working_dir'] ) ) {
 			$this->cleanup_directory( $job['state']['working_dir'] );
@@ -1219,9 +1159,7 @@ class ZoeCloud_Backup_Manager {
 		if ( $this->defer_scheduling ) {
 			return true;
 		}
-
 		$scheduled = wp_schedule_single_event( time() + 1, 'zoecloud_run_backup_job', array( $job_id ) );
-
 		if ( ! $scheduled ) {
 			return new WP_Error( 'zoecloud_job_schedule_failed', __( 'Could not schedule the next backup job step.', 'zoe-cloud' ) );
 		}
@@ -1230,157 +1168,87 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Save jobs while keeping recent history bounded.
-	 *
-	 * @param array $jobs Jobs keyed by ID.
-	 * @return void
-	 */
-	private function save_jobs( array $jobs ) {
-		uasort(
-			$jobs,
-			static function ( $left, $right ) {
-				return strcmp( $right['created_at'] ?? '', $left['created_at'] ?? '' );
-			}
-		);
-
-		update_option( 'zoecloud_jobs', array_slice( $jobs, 0, 50, true ), false );
-	}
-
-	/**
-	 * Mark abandoned jobs as failed so the UI does not show stale progress.
-	 *
-	 * @param array $jobs Jobs keyed by ID.
-	 * @return array
-	 */
-	private function expire_stale_jobs( array $jobs ) {
-		$changed   = false;
-		$threshold = time() - ( 15 * MINUTE_IN_SECONDS );
-
-		foreach ( $jobs as $job_id => &$job ) {
-			if ( empty( $job['status'] ) || ! in_array( $job['status'], array( 'queued', 'running' ), true ) ) {
-				continue;
-			}
-
-			$updated_at        = ! empty( $job['updated_at'] ) ? strtotime( $job['updated_at'] . ' UTC' ) : 0;
-			$working_dir       = $job['state']['working_dir'] ?? '';
-			$missing_workspace = ! empty( $working_dir ) && ! is_dir( $working_dir );
-
-			if ( ! $missing_workspace && $updated_at && $updated_at > $threshold ) {
-				continue;
-			}
-
-			if ( ! empty( $working_dir ) ) {
-				$this->cleanup_directory( $working_dir );
-			}
-
-			$job['status']     = 'failed';
-			$job['progress']   = 100;
-			$job['message']    = __( 'Backup job expired before completion.', 'zoe-cloud' );
-			$job['updated_at'] = current_time( 'mysql', true );
-			$changed           = true;
-		}
-		unset( $job );
-
-		if ( $changed ) {
-			$this->save_jobs( $jobs );
-		}
-
-		return $jobs;
-	}
-
-	/**
-	 * Remove old backups according to retention.
+	 * Remove old unlocked backups according to retention.
 	 *
 	 * @return void
 	 */
 	private function apply_retention_policy() {
 		$settings  = wp_parse_args( get_option( 'zoecloud_settings', array() ), array( 'retention_limit' => 10 ) );
 		$retention = max( 1, absint( $settings['retention_limit'] ) );
-		$records   = $this->list_backups();
-
-		if ( count( $records ) <= $retention ) {
-			return;
-		}
-
-		$unlocked = array_values(
+		$unlocked  = array_values(
 			array_filter(
-				$records,
+				$this->list_backups(),
 				static function ( $record ) {
 					return empty( $record['locked'] );
 				}
 			)
 		);
-		$locked   = array_values(
-			array_filter(
-				$records,
-				static function ( $record ) {
-					return ! empty( $record['locked'] );
-				}
-			)
-		);
-		$expired  = array_slice( $unlocked, $retention );
-		$active   = array_merge( $locked, array_slice( $unlocked, 0, $retention ) );
-
-		foreach ( $expired as $record ) {
-			$delete_result = $this->delete_backup_files( $record );
-
-			if ( is_wp_error( $delete_result ) ) {
-				$active[] = $record;
+		foreach ( array_slice( $unlocked, $retention ) as $record ) {
+			$result = $this->delete_backup_files( $record );
+			if ( ! is_wp_error( $result ) ) {
+				$this->backup_repository->delete( $record['id'] );
 			}
 		}
-
-		update_option( 'zoecloud_backups', $active, false );
 	}
 
 	/**
-	 * Delete local and cloud files for a backup record.
+	 * Delete cloud and local copies as separately persisted operations.
 	 *
 	 * @param array $record Backup record.
 	 * @return true|WP_Error
 	 */
 	private function delete_backup_files( array $record ) {
-		if ( ! empty( $record['cloud'] ) && is_array( $record['cloud'] ) ) {
-			$cloud_delete = $this->cloud_service->delete_backup( $record['cloud'] );
+		if ( ! empty( $record['cloud'] ) && is_array( $record['cloud'] ) && 'deleted' !== ( $record['cloud_status'] ?? '' ) ) {
+			$record['cloud_status'] = 'deleting';
+			$this->backup_repository->save( $record );
+			$result = $this->cloud_service->delete_backup( $record['cloud'] );
+			if ( is_wp_error( $result ) ) {
+				$record['cloud_status'] = 'delete_failed';
+				$record['last_error']   = $result->get_error_message();
+				$this->backup_repository->save( $record );
 
-			if ( is_wp_error( $cloud_delete ) ) {
-				return $cloud_delete;
+				return $result;
 			}
+			$record['cloud_status'] = 'deleted';
+			$record['cloud']        = null;
+			$this->backup_repository->save( $record );
 		}
 
-		if ( ! empty( $record['path'] ) && file_exists( $record['path'] ) && ! unlink( $record['path'] ) ) {
-			return new WP_Error( 'zoecloud_backup_delete_failed', __( 'Could not delete the backup file.', 'zoe-cloud' ) );
+		$path = ! empty( $record['storage_key'] ) ? $this->storage->resolve( $record['storage_key'] ) : '';
+		if ( $path && is_file( $path ) && ! wp_delete_file( $path ) ) {
+			$record['local_status'] = 'delete_failed';
+			$record['last_error']   = __( 'Could not delete the local backup file.', 'zoe-cloud' );
+			$this->backup_repository->save( $record );
+
+			return new WP_Error( 'zoecloud_backup_delete_failed', $record['last_error'] );
 		}
+		$record['local_status'] = 'deleted';
+		$this->backup_repository->save( $record );
 
 		return true;
 	}
 
 	/**
-	 * Compute storage dir.
+	 * Return the private backups directory.
 	 *
 	 * @return string
 	 */
 	private function get_storage_dir() {
-		$uploads = wp_upload_dir();
-		$dir     = trailingslashit( $uploads['basedir'] ) . 'zoecloud-backups';
-
-		wp_mkdir_p( $dir );
-		$this->protect_storage_directory( $dir );
-
-		return $dir;
+		return $this->storage->get_subdirectory( 'backups' );
 	}
 
 	/**
-	 * Build authenticated download URL.
+	 * Build an authenticated download URL.
 	 *
-	 * @param string $filename Archive filename.
+	 * @param string $backup_id Backup UUID.
 	 * @return string
 	 */
-	private function build_download_url( $filename ) {
+	private function build_download_url( $backup_id ) {
 		return wp_nonce_url(
 			add_query_arg(
 				array(
-					'action'   => 'zoecloud_download_backup',
-					'filename' => $filename,
+					'action'    => 'zoecloud_download_backup',
+					'backup_id' => $backup_id,
 				),
 				admin_url( 'admin-post.php' )
 			),
@@ -1446,214 +1314,69 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Add a file tree to the archive.
+	 * Build deterministic ordering from a table primary key.
 	 *
-	 * @param ZipArchive $zip           Zip archive.
-	 * @param string     $source_path   Absolute source path.
-	 * @param string     $archive_root  Target path inside the zip.
-	 * @param array      $excluded_roots Absolute normalized paths to skip.
-	 * @return array
+	 * @param string $table Database table.
+	 * @return string
 	 */
-	private function add_path_to_zip( ZipArchive $zip, $source_path, $archive_root, array $excluded_roots = array() ) {
-		$source_path = wp_normalize_path( $source_path );
-		$stats       = array(
-			'count' => 0,
-			'size'  => 0,
-		);
+	private function get_table_order_clause( $table ) {
+		global $wpdb;
 
-		if ( ! is_dir( $source_path ) ) {
-			return $stats;
-		}
-
-		$archive_root = trim( $archive_root, '/' );
-		$zip->addEmptyDir( $archive_root );
-
-		$directory = new RecursiveDirectoryIterator( $source_path, RecursiveDirectoryIterator::SKIP_DOTS );
-		$filter    = new RecursiveCallbackFilterIterator(
-			$directory,
-			function ( $item ) use ( $excluded_roots ) {
-				$item_path = wp_normalize_path( $item->getPathname() );
-
-				return ! $this->is_excluded_path( $item_path, $excluded_roots ) && ! $item->isLink() && $item->isReadable();
+		$table_name = $this->quote_identifier( $table );
+		$keys       = $wpdb->get_results( "SHOW KEYS FROM {$table_name} WHERE Key_name = 'PRIMARY'", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		usort(
+			$keys,
+			static function ( $left, $right ) {
+				return (int) ( $left['Seq_in_index'] ?? 0 ) <=> (int) ( $right['Seq_in_index'] ?? 0 );
 			}
 		);
-		$iterator  = new RecursiveIteratorIterator(
-			$filter,
-			RecursiveIteratorIterator::SELF_FIRST
-		);
-
-		foreach ( $iterator as $item ) {
-			$item_path = wp_normalize_path( $item->getPathname() );
-
-			$relative     = ltrim( substr( $item_path, strlen( $source_path ) ), '/' );
-			$archive_path = $archive_root . '/' . $relative;
-
-			if ( $item->isDir() ) {
-				$zip->addEmptyDir( $archive_path );
-				continue;
+		$columns = array();
+		foreach ( (array) $keys as $key ) {
+			if ( ! empty( $key['Column_name'] ) ) {
+				$columns[] = $this->quote_identifier( $key['Column_name'] );
 			}
-
-			$zip->addFile( $item_path, $archive_path );
-			++$stats['count'];
-			$stats['size'] += $item->getSize();
 		}
 
-		return $stats;
+		return $columns ? ' ORDER BY ' . implode( ',', $columns ) : '';
 	}
 
 	/**
-	 * Add WordPress core files to the archive.
+	 * Write one staged file and its authenticated checksum entry.
 	 *
-	 * @param ZipArchive $zip            Zip archive.
-	 * @param array      $excluded_roots Paths to exclude.
-	 * @return array
-	 */
-	private function add_core_to_zip( ZipArchive $zip, array $excluded_roots ) {
-		$root_items = scandir( ABSPATH );
-		$stats      = array(
-			'count' => 0,
-			'size'  => 0,
-		);
-
-		foreach ( $root_items as $item ) {
-			if ( '.' === $item || '..' === $item || 'wp-content' === $item ) {
-				continue;
-			}
-
-			$source_path = trailingslashit( ABSPATH ) . $item;
-			$source_path = wp_normalize_path( $source_path );
-
-			if ( $this->is_excluded_path( $source_path, $excluded_roots ) ) {
-				continue;
-			}
-
-			if ( is_dir( $source_path ) ) {
-				$path_stats      = $this->add_path_to_zip( $zip, $source_path, 'files/' . $item, $excluded_roots );
-				$stats['count'] += $path_stats['count'];
-				$stats['size']  += $path_stats['size'];
-				continue;
-			}
-
-			$zip->addFile( $source_path, 'files/' . $item );
-			++$stats['count'];
-			$stats['size'] += filesize( $source_path );
-		}
-
-		return $stats;
-	}
-
-	/**
-	 * Write a source tree to the staged file list.
-	 *
-	 * @param resource $handle         File list handle.
-	 * @param string   $source_path    Absolute source path.
-	 * @param string   $archive_root   Target root inside zip.
-	 * @param array    $excluded_roots Excluded paths.
-	 * @return array
-	 */
-	private function write_path_filelist( $handle, $source_path, $archive_root, array $excluded_roots ) {
-		$source_path = wp_normalize_path( $source_path );
-		$stats       = array(
-			'count' => 0,
-			'size'  => 0,
-		);
-
-		if ( ! is_dir( $source_path ) ) {
-			return $stats;
-		}
-
-		$directory = new RecursiveDirectoryIterator( $source_path, RecursiveDirectoryIterator::SKIP_DOTS );
-		$filter    = new RecursiveCallbackFilterIterator(
-			$directory,
-			function ( $item ) use ( $excluded_roots ) {
-				$item_path = wp_normalize_path( $item->getPathname() );
-
-				return ! $this->is_excluded_path( $item_path, $excluded_roots ) && ! $item->isLink() && $item->isReadable();
-			}
-		);
-		$iterator  = new RecursiveIteratorIterator(
-			$filter,
-			RecursiveIteratorIterator::SELF_FIRST
-		);
-
-		foreach ( $iterator as $item ) {
-			if ( $item->isDir() ) {
-				continue;
-			}
-
-			$item_path    = wp_normalize_path( $item->getPathname() );
-			$relative     = ltrim( substr( $item_path, strlen( $source_path ) ), '/' );
-			$archive_path = trim( $archive_root, '/' ) . '/' . $relative;
-
-			$this->write_filelist_entry( $handle, $item_path, $archive_path );
-			++$stats['count'];
-			$stats['size'] += $item->getSize();
-		}
-
-		return $stats;
-	}
-
-	/**
-	 * Write core files to the staged file list.
-	 *
-	 * @param resource $handle         File list handle.
-	 * @param array    $excluded_roots Excluded paths.
-	 * @return array
-	 */
-	private function write_core_filelist( $handle, array $excluded_roots ) {
-		$root_items = scandir( ABSPATH );
-		$stats      = array(
-			'count' => 0,
-			'size'  => 0,
-		);
-
-		foreach ( $root_items as $item ) {
-			if ( '.' === $item || '..' === $item || 'wp-content' === $item ) {
-				continue;
-			}
-
-			$source_path = wp_normalize_path( trailingslashit( ABSPATH ) . $item );
-
-			if ( $this->is_excluded_path( $source_path, $excluded_roots ) ) {
-				continue;
-			}
-
-			if ( is_dir( $source_path ) ) {
-				$path_stats      = $this->write_path_filelist( $handle, $source_path, 'files/' . $item, $excluded_roots );
-				$stats['count'] += $path_stats['count'];
-				$stats['size']  += $path_stats['size'];
-				continue;
-			}
-
-			if ( is_readable( $source_path ) && ! is_link( $source_path ) ) {
-				$this->write_filelist_entry( $handle, $source_path, 'files/' . $item );
-				++$stats['count'];
-				$stats['size'] += filesize( $source_path );
-			}
-		}
-
-		return $stats;
-	}
-
-	/**
-	 * Write one file list entry.
-	 *
-	 * @param resource $handle       File list handle.
-	 * @param string   $path         Absolute file path.
-	 * @param string   $archive_path Archive path.
+	 * @param resource      $handle          File list handle.
+	 * @param string        $path            Absolute source path.
+	 * @param string        $archive_path    Archive path.
+	 * @param resource|null $checksum_handle Checksum index handle.
 	 * @return void
 	 */
-	private function write_filelist_entry( $handle, $path, $archive_path ) {
+	private function write_filelist_entry( $handle, $path, $archive_path, $checksum_handle = null ) {
+		$hash = hash_file( 'sha256', $path );
 		fwrite(
 			$handle,
 			wp_json_encode(
 				array(
 					'path'    => $path,
 					'archive' => $archive_path,
+					'size'    => (int) filesize( $path ),
+					'mtime'   => (int) filemtime( $path ),
+					'sha256'  => $hash,
 				),
 				JSON_UNESCAPED_SLASHES
 			) . "\n"
 		);
+		if ( is_resource( $checksum_handle ) ) {
+			fwrite(
+				$checksum_handle,
+				wp_json_encode(
+					array(
+						'path'   => $archive_path,
+						'size'   => (int) filesize( $path ),
+						'sha256' => $hash,
+					),
+					JSON_UNESCAPED_SLASHES
+				) . "\n"
+			);
+		}
 	}
 
 	/**
@@ -1669,22 +1392,18 @@ class ZoeCloud_Backup_Manager {
 	/**
 	 * Attach cloud upload metadata to a stored backup.
 	 *
-	 * @param string $backup_id Backup ID.
+	 * @param string $backup_id Backup UUID.
 	 * @param array  $upload    Cloud upload payload.
 	 * @return void
 	 */
 	private function attach_cloud_upload_to_backup( $backup_id, array $upload ) {
-		$records = $this->list_backups();
-
-		foreach ( $records as &$record ) {
-			if ( isset( $record['id'] ) && $record['id'] === $backup_id ) {
-				$record['cloud'] = $upload;
-				unset( $record['cloud_error'] );
-				break;
-			}
+		$record = $this->backup_repository->find( $backup_id );
+		if ( $record ) {
+			$record['cloud']        = $upload;
+			$record['cloud_status'] = 'available';
+			$record['last_error']   = '';
+			$this->backup_repository->save( $record );
 		}
-
-		update_option( 'zoecloud_backups', $records, false );
 	}
 
 	/**
@@ -1695,16 +1414,12 @@ class ZoeCloud_Backup_Manager {
 	 * @return void
 	 */
 	private function attach_cloud_error_to_backup( $backup_id, $message ) {
-		$records = $this->list_backups();
-
-		foreach ( $records as &$record ) {
-			if ( isset( $record['id'] ) && $record['id'] === $backup_id ) {
-				$record['cloud_error'] = $message;
-				break;
-			}
+		$record = $this->backup_repository->find( $backup_id );
+		if ( $record ) {
+			$record['cloud_status'] = 'failed';
+			$record['last_error']   = $message;
+			$this->backup_repository->save( $record );
 		}
-
-		update_option( 'zoecloud_backups', $records, false );
 	}
 
 	/**
@@ -1781,7 +1496,7 @@ class ZoeCloud_Backup_Manager {
 	 */
 	private function build_excluded_roots( $storage_dir, array $excluded_paths ) {
 		$roots = array(
-			wp_normalize_path( $storage_dir ),
+			wp_normalize_path( $this->storage->get_directory() ),
 			wp_normalize_path( WP_CONTENT_DIR . '/cache' ),
 			wp_normalize_path( WP_CONTENT_DIR . '/upgrade' ),
 			wp_normalize_path( WP_CONTENT_DIR . '/debug.log' ),
