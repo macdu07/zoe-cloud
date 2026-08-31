@@ -1,179 +1,78 @@
-# ZoeCloud
+# ZoeCloud 1.0
 
-ZoeCloud is a WordPress backup plugin focused on portable backups, safe restores, and cloud storage integrations.
+ZoeCloud is a WordPress 6.4+ backup and recovery plugin for PHP 8.1+. It creates checksummed v2 archives, runs work through durable database-backed jobs, and supports optional Cloudflare R2 and Amazon S3 storage.
 
-The current implementation supports local backup creation, local downloads, restore validation, restore execution, retention limits, scheduled backups, and cloud uploads to Cloudflare R2 or AWS S3.
+## Architecture
 
-## Features
+The runtime is separated into:
 
-- Create portable WordPress backup ZIP files.
-- Include `/wp-content/` by default.
-- Optionally include WordPress core files.
-- Export the database to `database.sql`.
-- Store backup metadata in `manifest.json`.
-- Download generated ZIP files locally.
-- Restore an existing backup with URL search/replace.
-- Restore from a manually uploaded ZIP archive.
-- Preserve ZoeCloud backup records after restore.
-- Delete local backups from the dashboard and remove uploaded cloud objects.
-- Run manual and scheduled backups.
-- Upload backups to Cloudflare R2 or AWS S3.
-- Store cloud secrets encrypted in WordPress options.
-- Process backup jobs in stages to reduce timeout risk.
+- private storage with opaque archive keys;
+- backup and job repositories backed by dedicated WordPress tables;
+- staged backup, upload, cloud-download, and restore runners;
+- strict manifest, ZIP, checksum, SQL, and path validation;
+- authenticated REST resources based on UUIDs;
+- WP-CLI commands for automation and recovery.
 
-## Backup Format
+Restore always requires a verified full safety backup. Database content is imported into auxiliary tables before an atomic exchange. Replaced files are recorded in a private rollback journal.
 
-Backups are generated with this filename pattern:
+## Development
 
-```text
-zoe-cloud-backup-{domain}-{YYYY-MM-DD-HH-mm}.zip
-```
-
-ZIP structure:
-
-```text
-files/
-database.sql
-manifest.json
-```
-
-## Requirements
-
-- WordPress 6.4+
-- PHP 7.4+
-- PHP `ZipArchive` extension
-- Writable WordPress uploads directory
-- WP-Cron enabled for scheduled/background jobs
-- Outbound internet access for cloud uploads
-
-## Installation
-
-1. Copy the `zoe-cloud` directory into `wp-content/plugins/`.
-2. Activate ZoeCloud in the WordPress admin.
-3. Open the `ZoeCloud` admin menu.
-4. Confirm the preflight checks pass.
-5. Configure Cloudflare R2 or AWS S3 if cloud uploads are required.
-6. Create a backup from the dashboard.
-
-## Cloud Storage Configuration
-
-ZoeCloud stores cloud backups through S3-compatible APIs. Select the active provider in `ZoeCloud > Storage`.
-
-### Cloudflare R2
-
-No OAuth or redirect URI is required.
-
-Required settings:
-
-- `R2 Account ID`
-- `R2 Access Key ID`
-- `R2 Secret Access Key`
-- `R2 Bucket`
-- `R2 Prefix` optional, defaults to `zoe-cloud`
-
-Endpoint format:
-
-```text
-https://{account_id}.r2.cloudflarestorage.com
-```
-
-S3 region:
-
-```text
-auto
-```
-
-Recommended Cloudflare setup:
-
-1. Create an R2 bucket.
-2. Create S3 API credentials scoped to that bucket.
-3. Select `Cloudflare R2` in `ZoeCloud > Storage`.
-4. Save the credentials.
-5. Enable `Upload to cloud storage` when creating a backup.
-
-### AWS S3
-
-Required settings:
-
-- `S3 Access Key ID`
-- `S3 Secret Access Key`
-- `S3 Bucket`
-- `S3 Region`, for example `us-east-1`
-- `S3 Prefix` optional, blank by default. Leave it blank to store each site folder at the bucket root.
-
-Endpoint format:
-
-```text
-https://{bucket}.s3.{region}.amazonaws.com
-```
-
-Recommended AWS setup:
-
-1. Create an S3 bucket.
-2. Create an IAM user or access key with write permissions for that bucket.
-3. Select `AWS S3` in `ZoeCloud > Storage`.
-4. Save the credentials, bucket, region, and optional prefix.
-5. Enable `Upload to cloud storage` when creating a backup.
-
-## Backup Workflow
-
-The staged backup runner performs these steps:
-
-1. Initialize backup job.
-2. Export database tables in batches.
-3. Scan files into a durable file list.
-4. Add files to the ZIP in batches.
-5. Add `database.sql` and `manifest.json`.
-6. Store a local backup record.
-7. Upload to the selected cloud provider when enabled.
-8. Clean temporary files.
-
-## Restore Workflow
-
-The restore system can:
-
-- Select an existing backup.
-- Validate ZIP structure before restore.
-- Read origin metadata from `manifest.json`.
-- Restore files and database tables.
-- Replace source URLs with the current target URL.
-- Preserve ZoeCloud backup records after restore.
-
-Restore requires explicit confirmation because it can overwrite site files and database tables.
-
-## Security
-
-ZoeCloud currently applies:
-
-- `manage_options` capability checks.
-- WordPress nonces for admin actions.
-- REST nonce validation.
-- Encrypted storage for cloud secrets.
-- ZIP path traversal validation during restore.
-- Uploaded ZIP type, structure, entry count, size, and compression-ratio validation.
-- Basic direct-access protection for the local backup directory.
-
-Use cloud credentials with the narrowest bucket permissions possible.
-
-## Development Checks
+Install dependencies and the WordPress test library:
 
 ```bash
 composer install
-composer lint:php
+composer test:install
 ```
 
-`composer lint:php` runs WordPress Coding Standards and PHP compatibility checks without warnings. Run `vendor/bin/phpcs` directly when you want the full warning report for filesystem and database operations used by backup/restore internals.
+The installer supports these environment variables:
 
-## Current Limitations
+```text
+WP_VERSION=latest
+WP_TESTS_DIR=/tmp/wordpress-tests-lib
+WP_TESTS_DB_NAME=wordpress_test
+WP_TESTS_DB_USER=root
+WP_TESTS_DB_PASS=
+WP_TESTS_DB_HOST=localhost
+```
 
-- Cloud restore from R2/S3 is not implemented yet; backups are restored from local records/files.
-- Incremental backups are not implemented yet.
+Run the quality suite:
 
-## Roadmap
+```bash
+composer lint:php
+composer analyse
+composer test
+composer audit
+```
 
-- Download/import backups from cloud providers.
-- Additional S3-compatible providers beyond R2 and AWS S3.
-- Google Drive via OAuth broker.
-- Incremental backups.
-- SaaS dashboard.
-- Multisite support.
+Build the WordPress.org distribution:
+
+```bash
+composer package
+```
+
+The generated archive is `dist/zoe-cloud-1.0.0.zip`. It excludes tests, development dependencies, CI configuration, caches, and internal tooling.
+
+## System cron
+
+WP-Cron remains the trigger and is automatically reconciled. Sites that disable or cannot reliably trigger WP-Cron should invoke:
+
+```bash
+wp zoecloud jobs run
+```
+
+## Recovery
+
+```bash
+wp zoecloud doctor
+wp zoecloud backup list
+wp zoecloud backup verify <backup-id>
+wp zoecloud restore <backup-id> --hostname=<current-hostname>
+```
+
+Keep the mandatory safety backup until the restored site has been fully verified.
+
+## Privacy and external services
+
+ZoeCloud has no telemetry or automatic external connections. Optional R2/S3 requests occur only after administrator configuration and an explicit action or enabled scheduled cloud upload. Backup archives can contain all site files and database data; use narrowly scoped cloud credentials and appropriate retention policies.
+
+See [readme.txt](readme.txt) for the complete WordPress.org disclosure and recovery procedure.

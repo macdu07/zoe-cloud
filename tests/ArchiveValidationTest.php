@@ -49,10 +49,10 @@ class ZoeCloud_Archive_Validation_Test extends WP_UnitTestCase {
 				'php'        => '8.1',
 				'ziparchive' => true,
 			),
-			'files_count'         => 0,
-			'files_size'          => 0,
-			'database_tables'     => 0,
-			'database_rows'       => 0,
+			'files_count'          => 0,
+			'files_size'           => 0,
+			'database_tables'      => 0,
+			'database_rows'        => 0,
 			'database_prefix'      => 'wp_',
 			'database_table_names' => array(),
 			'checksums'            => array(
@@ -98,7 +98,11 @@ class ZoeCloud_Archive_Validation_Test extends WP_UnitTestCase {
 				'site_url'     => 'https://example.org',
 				'table_prefix' => 'wp_',
 			),
-			'requirements'         => array( 'wordpress' => '6.4', 'php' => '8.1', 'ziparchive' => true ),
+			'requirements'         => array(
+				'wordpress'  => '6.4',
+				'php'        => '8.1',
+				'ziparchive' => true,
+			),
 			'files_count'          => 0,
 			'files_size'           => 0,
 			'database_tables'      => 2,
@@ -121,5 +125,46 @@ class ZoeCloud_Archive_Validation_Test extends WP_UnitTestCase {
 		$result = ( new ZoeCloud_Restore_Manager() )->validate_backup( $path );
 		$this->assertWPError( $result );
 		$this->assertSame( 'zoecloud_restore_manifest_invalid', $result->get_error_code() );
+	}
+
+	/** A changed component is rejected even when the ZIP structure is valid. */
+	public function test_checksum_mismatch_is_rejected() {
+		$path     = $this->directory . '/checksum.zip';
+		$sql      = "SET foreign_key_checks = 0;\nSET foreign_key_checks = 1;\n";
+		$manifest = array(
+			'format'               => 'zoecloud-backup',
+			'format_version'       => 2,
+			'origin'               => array(
+				'home_url'     => 'https://example.org',
+				'site_url'     => 'https://example.org',
+				'table_prefix' => 'wp_',
+			),
+			'requirements'         => array(
+				'wordpress'  => '6.4',
+				'php'        => '8.1',
+				'ziparchive' => true,
+			),
+			'files_count'          => 0,
+			'files_size'           => 0,
+			'database_tables'      => 0,
+			'database_rows'        => 0,
+			'database_prefix'      => 'wp_',
+			'database_table_names' => array(),
+			'checksums'            => array(
+				'database.sql'    => str_repeat( '0', 64 ),
+				'checksums.jsonl' => hash( 'sha256', '' ),
+			),
+		);
+		$zip      = new ZipArchive();
+		$zip->open( $path, ZipArchive::CREATE );
+		$zip->addEmptyDir( 'files' );
+		$zip->addFromString( 'database.sql', $sql );
+		$zip->addFromString( 'checksums.jsonl', '' );
+		$zip->addFromString( 'manifest.json', wp_json_encode( $manifest ) );
+		$zip->close();
+
+		$result = ( new ZoeCloud_Restore_Manager() )->validate_backup( $path );
+		$this->assertWPError( $result );
+		$this->assertSame( 'zoecloud_restore_checksum_mismatch', $result->get_error_code() );
 	}
 }

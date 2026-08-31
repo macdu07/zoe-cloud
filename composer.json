@@ -11,12 +11,17 @@
 		"phpcompatibility/phpcompatibility-wp": "^2.1",
 		"phpunit/phpunit": "^9.6",
 		"wp-coding-standards/wpcs": "^3.4.1",
-		"yoast/phpunit-polyfills": "^4.0"
+		"yoast/phpunit-polyfills": "^4.0",
+		"phpstan/phpstan": "^2.1",
+		"szepeviktor/phpstan-wordpress": "^2.0",
+		"php-stubs/wp-cli-stubs": "^2.12",
+		"php-stubs/wordpress-stubs": "^6.9"
 	},
 	"scripts": {
 		"test:install": "bash bin/install-wp-tests.sh",
 		"lint:php": "phpcs -n",
 		"lint:php:fix": "phpcbf",
+		"analyse": "phpstan analyse --no-progress",
 		"test": "phpunit",
 		"package": "bash bin/build-zip.sh"
 	},

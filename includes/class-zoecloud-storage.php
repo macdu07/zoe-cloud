@@ -9,6 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Private recursive cleanup needs direct directory removal after validated path containment.
+
 /** Resolves and protects ZoeCloud's local files. */
 class ZoeCloud_Storage {
 	const DIRECTORY_OPTION = 'zoecloud_storage_token';
@@ -83,6 +85,34 @@ class ZoeCloud_Storage {
 	/** Recursively remove plugin storage after explicit uninstall consent. */
 	public function purge() {
 		$this->remove_directory( $this->get_directory() );
+	}
+
+	/**
+	 * Remove abandoned upload and workspace artifacts.
+	 *
+	 * @param int $max_age Maximum age in seconds.
+	 * @return void
+	 */
+	public function cleanup_expired( $max_age = DAY_IN_SECONDS ) {
+		$threshold = time() - max( HOUR_IN_SECONDS, absint( $max_age ) );
+		foreach ( array( 'uploads', 'restore', 'backups' ) as $subdirectory ) {
+			$directory = $this->get_subdirectory( $subdirectory );
+			$items     = scandir( $directory );
+			foreach ( is_array( $items ) ? $items : array() as $item ) {
+				if ( '.' === $item || '..' === $item || in_array( $item, array( 'index.php', '.htaccess', 'web.config' ), true ) ) {
+					continue;
+				}
+				$path = $directory . '/' . $item;
+				if ( filemtime( $path ) >= $threshold ) {
+					continue;
+				}
+				if ( is_dir( $path ) && ( 'restore' === $subdirectory || 0 === strpos( $item, 'tmp-' ) ) ) {
+					$this->remove_directory( $path );
+				} elseif ( is_file( $path ) && 'uploads' === $subdirectory ) {
+					wp_delete_file( $path );
+				}
+			}
+		}
 	}
 
 	/**

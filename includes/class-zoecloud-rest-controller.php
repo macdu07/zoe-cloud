@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// phpcs:disable WordPress.WP.AlternativeFunctions.file_system_operations_readfile -- Authenticated backup downloads must be streamed without loading archives into memory.
+// phpcs:disable Generic.PHP.ForbiddenFunctions.Found -- Uploads are validated with is_uploaded_file() and moved into opaque private storage before archive validation.
+
 /**
  * Registers and handles ZoeCloud REST endpoints.
  */
@@ -128,16 +131,6 @@ class ZoeCloud_REST_Controller {
 
 		register_rest_route(
 			'zoecloud/v1',
-			'/backups/upload',
-			array(
-				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => array( $this, 'upload_backup_direct' ),
-				'permission_callback' => array( $this, 'permissions' ),
-			)
-		);
-
-		register_rest_route(
-			'zoecloud/v1',
 			'/backups/(?P<id>[0-9a-fA-F-]{36})',
 			array(
 				array(
@@ -229,16 +222,16 @@ class ZoeCloud_REST_Controller {
 						'format'   => 'uuid',
 						'required' => true,
 					),
-					'hostname' => array(
+					'hostname'  => array(
 						'type'              => 'string',
 						'required'          => true,
 						'sanitize_callback' => 'sanitize_text_field',
 					),
-					'search' => array(
+					'search'    => array(
 						'type'   => 'string',
 						'format' => 'uri',
 					),
-					'replace' => array(
+					'replace'   => array(
 						'type'   => 'string',
 						'format' => 'uri',
 					),
@@ -408,10 +401,13 @@ class ZoeCloud_REST_Controller {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function create_backup( WP_REST_Request $request ) {
+		if ( ! empty( $_FILES['zip_file'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
+			return $this->upload_backup_direct();
+		}
 		$result = $this->backup_manager->enqueue_backup(
 			array(
 				'include_core' => (bool) $request->get_param( 'include_core' ),
-				'upload_cloud' => (bool) ( $request->get_param( 'upload_cloud' ) ?? $request->get_param( 'upload_drive' ) ),
+				'upload_cloud' => (bool) $request->get_param( 'upload_cloud' ),
 				'source'       => 'manual',
 			)
 		);
@@ -615,6 +611,10 @@ class ZoeCloud_REST_Controller {
 					return;
 				}
 				$job['state']['safety_backup_id'] = $safety['result']['backup_id'] ?? '';
+				$verified                         = $this->backup_manager->verify_backup( $job['state']['safety_backup_id'] );
+				if ( is_wp_error( $verified ) ) {
+					throw new RuntimeException( __( 'The safety backup could not be verified; restore was stopped.', 'zoe-cloud' ) );
+				}
 				$this->advance_restore_job( $job, 'restoring', 35, __( 'Safety backup completed. Restoring site.', 'zoe-cloud' ) );
 			} elseif ( 'rolling_back' === $job['stage'] ) {
 				$rollback = $this->run_restore_rollback( $job );
@@ -623,9 +623,7 @@ class ZoeCloud_REST_Controller {
 				}
 				throw new RuntimeException( sprintf( 'Restore failed and was rolled back: %s', $job['state']['restore_error'] ?? __( 'Unknown restore error.', 'zoe-cloud' ) ) );
 			} else {
-				$this->set_maintenance_mode( true );
 				$result = $this->restore_manager->restore_backup( $this->backup_manager->get_backup_path( $job['args']['backup_id'] ), $job['args']['search'], $job['args']['replace'], true );
-				$this->set_maintenance_mode( false );
 				if ( is_wp_error( $result ) ) {
 					$job['state']['restore_error'] = $result->get_error_message();
 					$this->advance_restore_job( $job, 'rolling_back', 80, __( 'Restore failed. Rolling back from the safety backup.', 'zoe-cloud' ), 'rolling_back' );
@@ -656,9 +654,7 @@ class ZoeCloud_REST_Controller {
 	 */
 	private function run_restore_rollback( array $job ) {
 		$rollback_id = $job['state']['safety_backup_id'] ?? '';
-		$this->set_maintenance_mode( true );
 		$rollback = $this->restore_manager->restore_backup( $this->backup_manager->get_backup_path( $rollback_id ), '', '', true );
-		$this->set_maintenance_mode( false );
 		if ( is_wp_error( $rollback ) ) {
 			return new WP_Error(
 				'zoecloud_restore_rollback_failed',
@@ -803,9 +799,8 @@ class ZoeCloud_REST_Controller {
 	/**
 	 * Accept a ZIP upload and register it directly as a backup record.
 	 *
-	 * This is the single-step alternative to the two-step restore/upload +
-	 * restore/upload/import flow. The file is validated, moved to the backups
-	 * storage directory and stored in the backup registry in one request.
+	 * The file is validated, moved to private storage, and registered in one
+	 * authenticated request.
 	 *
 	 * @return WP_REST_Response|WP_Error
 	 */
@@ -853,7 +848,7 @@ class ZoeCloud_REST_Controller {
 		$temp_key  = wp_generate_password( 32, false, false );
 		$temp_path = $temp_dir . '/zoecloud-upload-' . $temp_key . '.zip';
 
-		if ( ! move_uploaded_file( (string) $file['tmp_name'], $temp_path ) ) {
+		if ( ! move_uploaded_file( (string) $file['tmp_name'], $temp_path ) ) { // phpcs:ignore Generic.PHP.ForbiddenFunctions.Found -- Verified HTTP upload is moved into opaque private storage.
 			return new WP_Error( 'zoecloud_upload_move_failed', __( 'Could not save the uploaded file.', 'zoe-cloud' ), array( 'status' => 500 ) );
 		}
 

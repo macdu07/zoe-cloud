@@ -115,10 +115,10 @@ class ZoeCloud_Job_Repository {
 	public function acquire( $id, $ttl = 90 ) {
 		global $wpdb;
 
-		$table   = ZoeCloud_Schema::table( 'jobs' );
-		$token   = bin2hex( random_bytes( 24 ) );
-		$now     = current_time( 'mysql', true );
-		$until   = gmdate( 'Y-m-d H:i:s', time() + max( 30, absint( $ttl ) ) );
+		$table = ZoeCloud_Schema::table( 'jobs' );
+		$token = bin2hex( random_bytes( 24 ) );
+		$now   = current_time( 'mysql', true );
+		$until = gmdate( 'Y-m-d H:i:s', time() + max( 30, absint( $ttl ) ) );
 		// The table identifier is generated internally by ZoeCloud_Schema.
 		$sql = $wpdb->prepare(
 			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
@@ -218,6 +218,16 @@ class ZoeCloud_Job_Repository {
 				'created_at' => current_time( 'mysql', true ),
 			)
 		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+
+		$table = ZoeCloud_Schema::table( 'job_events' );
+		$wpdb->query(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"DELETE FROM {$table} WHERE job_id = %s AND id NOT IN (SELECT id FROM (SELECT id FROM {$table} WHERE job_id = %s ORDER BY id DESC LIMIT 100) AS recent_events)",
+				$job_id,
+				$job_id
+			)
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery
 	}
 
 	/**

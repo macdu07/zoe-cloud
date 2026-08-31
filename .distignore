@@ -12,3 +12,5 @@ node_modules
 bin
 tests
 phpunit.xml.dist
+phpstan.neon.dist
+phpstan-bootstrap.php

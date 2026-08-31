@@ -8,9 +8,9 @@ trap 'rm -rf "${STAGE_DIR}"' EXIT
 
 mkdir -p "${OUTPUT_DIR}" "${STAGE_DIR}/zoe-cloud"
 cd "${PLUGIN_DIR}"
-git ls-files -z | while IFS= read -r -d '' file; do
+git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do
 	case "${file}" in
-		.github/*|bin/*|tests/*|composer.json|composer.lock|phpcs.xml|phpcs.xml.dist|phpunit.xml.dist|.distignore|.gitignore|.phpunit.result.cache) continue ;;
+		.github/*|bin/*|tests/*|composer.json|composer.lock|phpcs.xml|phpcs.xml.dist|phpunit.xml.dist|phpstan.neon.dist|phpstan-bootstrap.php|.distignore|.gitignore|.phpunit.result.cache) continue ;;
 	esac
 	mkdir -p "${STAGE_DIR}/zoe-cloud/$(dirname "${file}")"
 	cp "${file}" "${STAGE_DIR}/zoe-cloud/${file}"

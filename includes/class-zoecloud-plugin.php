@@ -41,7 +41,6 @@ class ZoeCloud_Plugin {
 	 */
 	public function boot() {
 		$this->maybe_install_schema();
-		$this->maybe_upgrade_settings();
 		$crypto                = new ZoeCloud_Crypto();
 		$storage               = new ZoeCloud_Storage();
 		$backup_repository     = new ZoeCloud_Backup_Repository();
@@ -64,6 +63,7 @@ class ZoeCloud_Plugin {
 		add_action( 'init', array( $this, 'reconcile_schedule' ), 20 );
 		add_action( 'init', array( $this, 'reconcile_job_runner' ), 21 );
 		add_action( 'zoecloud_run_jobs', array( $this, 'run_due_jobs' ) );
+		add_action( 'admin_init', array( $this, 'register_privacy_policy_content' ) );
 
 		$admin->hooks();
 
@@ -78,37 +78,20 @@ class ZoeCloud_Plugin {
 		}
 	}
 
+	/** Add transparent suggested text to WordPress privacy policy tooling. */
+	public function register_privacy_policy_content() {
+		if ( ! function_exists( 'wp_add_privacy_policy_content' ) ) {
+			return;
+		}
+		$content = '<p>' . esc_html__( 'This site uses ZoeCloud to create backup archives that may contain the complete WordPress database and files, including personal data already stored by the site. Local copies are restricted to administrators.', 'zoe-cloud' ) . '</p>';
+		$content .= '<p>' . esc_html__( 'If optional Cloudflare R2 or Amazon S3 storage is enabled, backup contents are sent to the administrator-selected account. ZoeCloud itself does not collect telemetry or contact the plugin author.', 'zoe-cloud' ) . '</p>';
+		wp_add_privacy_policy_content( 'ZoeCloud', wp_kses_post( wpautop( $content ) ) );
+	}
+
 	/** Ensure fresh installations have the current operational schema. */
 	private function maybe_install_schema() {
 		if ( ZoeCloud_Schema::VERSION !== get_option( 'zoecloud_db_version' ) ) {
 			ZoeCloud_Schema::install();
-		}
-	}
-
-	/**
-	 * Add v0.2 settings without changing existing automation behavior.
-	 *
-	 * @return void
-	 */
-	private function maybe_upgrade_settings() {
-		$settings = get_option( 'zoecloud_settings', array() );
-
-		if ( ! is_array( $settings ) ) {
-			return;
-		}
-
-		$changed = false;
-		if ( ! array_key_exists( 'schedule_enabled', $settings ) ) {
-			$settings['schedule_enabled'] = wp_next_scheduled( 'zoecloud_run_scheduled_backup' ) ? 1 : 0;
-			$changed                      = true;
-		}
-		if ( ! array_key_exists( 'auto_upload_cloud', $settings ) && array_key_exists( 'auto_upload_drive', $settings ) ) {
-			$settings['auto_upload_cloud'] = ! empty( $settings['auto_upload_drive'] ) ? 1 : 0;
-			unset( $settings['auto_upload_drive'] );
-			$changed = true;
-		}
-		if ( $changed ) {
-			update_option( 'zoecloud_settings', $settings, false );
 		}
 	}
 
@@ -140,6 +123,10 @@ class ZoeCloud_Plugin {
 
 	/** Run a bounded set of due jobs without relying on an open admin page. */
 	public function run_due_jobs() {
+		if ( ! get_transient( 'zoecloud_cleanup_recent' ) ) {
+			( new ZoeCloud_Storage() )->cleanup_expired();
+			set_transient( 'zoecloud_cleanup_recent', 1, HOUR_IN_SECONDS );
+		}
 		foreach ( $this->jobs->due( 5 ) as $job_id ) {
 			$job = $this->jobs->find( $job_id );
 			if ( ! $job ) {

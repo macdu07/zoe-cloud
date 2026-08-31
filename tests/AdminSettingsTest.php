@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests v0.2 settings behavior.
+ * Tests 1.0 settings behavior.
  *
  * @package ZoeCloud
  */

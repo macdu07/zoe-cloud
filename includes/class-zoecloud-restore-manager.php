@@ -9,6 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Restore journals and large archives require bounded streaming I/O and private recursive cleanup.
+
 /**
  * Validates backup archives and restores files/database content.
  */
@@ -109,7 +111,7 @@ class ZoeCloud_Restore_Manager {
 			$zip->close();
 			return new WP_Error( 'zoecloud_restore_manifest_invalid', __( 'The backup manifest is missing or too large.', 'zoe-cloud' ) );
 		}
-		$manifest     = is_string( $manifest_raw ) ? json_decode( $manifest_raw, true ) : null;
+		$manifest = is_string( $manifest_raw ) ? json_decode( $manifest_raw, true ) : null;
 		if ( ! is_array( $manifest ) || 'zoecloud-backup' !== ( $manifest['format'] ?? '' ) || 2 !== (int) ( $manifest['format_version'] ?? 0 ) ) {
 			$zip->close();
 			return new WP_Error( 'zoecloud_restore_manifest_invalid', __( 'The archive does not contain a valid ZoeCloud v2 manifest.', 'zoe-cloud' ) );
@@ -200,14 +202,26 @@ class ZoeCloud_Restore_Manager {
 
 		$zip->close();
 
+		$journal_dir = $temp_dir . '/journal';
+		wp_mkdir_p( $journal_dir );
 		$preserved_options = $this->get_preserved_options();
 		$sql               = file_get_contents( $temp_dir . '/database.sql' );
 
-		$imported = $this->import_sql( $sql, $validated['manifest'] );
+		$table_journal = $this->build_table_journal( $validated['manifest'] );
+		file_put_contents( $journal_dir . '/tables.json', wp_json_encode( $table_journal, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+		$imported = $this->import_sql( $sql, $validated['manifest'], $table_journal['staging'] );
 
 		if ( is_wp_error( $imported ) ) {
 			$this->cleanup_directory( $temp_dir );
 			return $imported;
+		}
+		$this->set_maintenance_mode( true );
+		$activated = $this->activate_staged_tables( $table_journal );
+		if ( is_wp_error( $activated ) ) {
+			$this->set_maintenance_mode( false );
+			$this->cleanup_staged_tables( $table_journal );
+			$this->cleanup_directory( $temp_dir );
+			return $activated;
 		}
 
 		$this->restore_preserved_options( $preserved_options );
@@ -217,15 +231,39 @@ class ZoeCloud_Restore_Manager {
 			$replaced = $this->replace_urls_in_database( $search, $replacement, $tables );
 
 			if ( is_wp_error( $replaced ) ) {
+				$this->rollback_tables( $table_journal );
+				$this->set_maintenance_mode( false );
 				$this->cleanup_directory( $temp_dir );
 				return $replaced;
 			}
 		}
 
-		$files_restored = $this->restore_files( $temp_dir . '/files' );
+		$files_restored = $this->restore_files( $temp_dir . '/files', $journal_dir );
+		if ( is_wp_error( $files_restored ) ) {
+			$this->rollback_files( $journal_dir );
+			$this->rollback_tables( $table_journal );
+		} else {
+			$this->finalize_tables( $table_journal );
+		}
+		$this->set_maintenance_mode( false );
 		$this->cleanup_directory( $temp_dir );
 
 		return is_wp_error( $files_restored ) ? $files_restored : true;
+	}
+
+	/**
+	 * Limit maintenance mode to the destructive table/file exchange window.
+	 *
+	 * @param bool $enabled Whether maintenance mode is enabled.
+	 * @return void
+	 */
+	private function set_maintenance_mode( $enabled ) {
+		$file = trailingslashit( ABSPATH ) . '.maintenance';
+		if ( $enabled ) {
+			file_put_contents( $file, '<?php $upgrading = ' . time() . ';' );
+		} elseif ( file_exists( $file ) ) {
+			wp_delete_file( $file );
+		}
 	}
 
 	/** Preserve operational options that must remain local to the destination. */
@@ -255,116 +293,13 @@ class ZoeCloud_Restore_Manager {
 	}
 
 	/**
-	 * Build a local backup record for the archive being restored.
-	 *
-	 * @param string $zip_path Archive path.
-	 * @param array  $manifest Backup manifest.
-	 * @return array
-	 */
-	private function build_backup_record_from_archive( $zip_path, array $manifest ) {
-		$filename = basename( $zip_path );
-
-		return array(
-			'id'           => md5( wp_normalize_path( $zip_path ) ),
-			'created_at'   => current_time( 'mysql', true ),
-			'filename'     => $filename,
-			'path'         => $zip_path,
-			'download_url' => wp_nonce_url(
-				add_query_arg(
-					array(
-						'action'   => 'zoecloud_download_backup',
-						'filename' => $filename,
-					),
-					admin_url( 'admin-post.php' )
-				),
-				'zoecloud_download_backup'
-			),
-			'size'         => file_exists( $zip_path ) ? filesize( $zip_path ) : 0,
-			'manifest'     => $manifest,
-			'drive'        => null,
-		);
-	}
-
-	/**
-	 * Merge preserved local backup records back after database import.
-	 *
-	 * @param array $preserved_records Backup records from before restore.
-	 * @return void
-	 */
-	private function merge_backup_records( array $preserved_records ) {
-		global $wpdb;
-
-		wp_cache_delete( 'zoecloud_backups', 'options' );
-		wp_cache_delete( 'alloptions', 'options' );
-
-		$current_records = get_option( 'zoecloud_backups', array() );
-		$current_records = is_array( $current_records ) ? $current_records : array();
-		$merged          = array();
-
-		foreach ( array_merge( $current_records, $preserved_records ) as $record ) {
-			if ( ! is_array( $record ) ) {
-				continue;
-			}
-
-			$key = ! empty( $record['id'] ) ? $record['id'] : ( $record['filename'] ?? '' );
-
-			if ( '' === $key ) {
-				continue;
-			}
-
-			$merged[ $key ] = $record;
-		}
-
-		$records = array_values( $merged );
-
-		usort(
-			$records,
-			static function ( $left, $right ) {
-				return strcmp( $right['created_at'] ?? '', $left['created_at'] ?? '' );
-			}
-		);
-
-		$serialized = maybe_serialize( $records );
-		$exists     = $wpdb->get_var(
-			$wpdb->prepare(
-				"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
-				'zoecloud_backups'
-			)
-		);
-
-		if ( $exists ) {
-			$wpdb->update(
-				$wpdb->options,
-				array(
-					'option_value' => $serialized,
-					'autoload'     => 'off',
-				),
-				array(
-					'option_name' => 'zoecloud_backups',
-				)
-			);
-		} else {
-			$wpdb->insert(
-				$wpdb->options,
-				array(
-					'option_name'  => 'zoecloud_backups',
-					'option_value' => $serialized,
-					'autoload'     => 'off',
-				)
-			);
-		}
-
-		wp_cache_delete( 'zoecloud_backups', 'options' );
-		wp_cache_delete( 'alloptions', 'options' );
-	}
-
-	/**
 	 * Restore extracted files to ABSPATH.
 	 *
-	 * @param string $files_root Extracted files root.
+	 * @param string $files_root  Extracted files root.
+	 * @param string $journal_dir Private rollback journal directory.
 	 * @return true|WP_Error
 	 */
-	private function restore_files( $files_root ) {
+	private function restore_files( $files_root, $journal_dir ) {
 		if ( ! is_dir( $files_root ) ) {
 			return true;
 		}
@@ -378,7 +313,7 @@ class ZoeCloud_Restore_Manager {
 
 			$source = $files_root . '/' . $item;
 			$target = trailingslashit( ABSPATH ) . $item;
-			$copied = $this->copy_directory( $source, $target );
+			$copied = $this->copy_directory( $source, $target, $journal_dir );
 
 			if ( is_wp_error( $copied ) ) {
 				return $copied;
@@ -391,11 +326,12 @@ class ZoeCloud_Restore_Manager {
 	/**
 	 * Copy files or folders recursively.
 	 *
-	 * @param string $source Source path.
-	 * @param string $target Destination path.
+	 * @param string $source      Source path.
+	 * @param string $target      Destination path.
+	 * @param string $journal_dir Private rollback journal directory.
 	 * @return true|WP_Error
 	 */
-	private function copy_directory( $source, $target ) {
+	private function copy_directory( $source, $target, $journal_dir ) {
 		if ( is_dir( $source ) ) {
 			if ( ! wp_mkdir_p( $target ) ) {
 				return new WP_Error( 'zoecloud_restore_directory_failed', __( 'Could not create a restore directory.', 'zoe-cloud' ), array( 'target' => $target ) );
@@ -408,7 +344,7 @@ class ZoeCloud_Restore_Manager {
 					continue;
 				}
 
-				$copied = $this->copy_directory( $source . '/' . $item, $target . '/' . $item );
+				$copied = $this->copy_directory( $source . '/' . $item, $target . '/' . $item, $journal_dir );
 
 				if ( is_wp_error( $copied ) ) {
 					return $copied;
@@ -418,6 +354,28 @@ class ZoeCloud_Restore_Manager {
 			return true;
 		}
 
+		$relative = ltrim( substr( wp_normalize_path( $target ), strlen( wp_normalize_path( trailingslashit( ABSPATH ) ) ) ), '/' );
+		$backup   = trailingslashit( $journal_dir ) . 'files/' . $relative;
+		$existed  = is_file( $target );
+		if ( $existed ) {
+			wp_mkdir_p( dirname( $backup ) );
+			if ( ! copy( $target, $backup ) ) {
+				return new WP_Error( 'zoecloud_restore_journal_failed', __( 'Could not journal a file before replacement.', 'zoe-cloud' ), array( 'target' => $target ) );
+			}
+		}
+		file_put_contents(
+			trailingslashit( $journal_dir ) . 'files.jsonl',
+			wp_json_encode(
+				array(
+					'target'  => $target,
+					'backup'  => $backup,
+					'existed' => $existed,
+				),
+				JSON_UNESCAPED_SLASHES
+			) . "\n",
+			FILE_APPEND
+		);
+
 		if ( ! copy( $source, $target ) ) {
 			return new WP_Error( 'zoecloud_restore_file_failed', __( 'Could not restore a file.', 'zoe-cloud' ), array( 'target' => $target ) );
 		}
@@ -426,21 +384,172 @@ class ZoeCloud_Restore_Manager {
 	}
 
 	/**
-	 * Import SQL statements.
+	 * Reverse file replacements recorded in the private journal.
 	 *
-	 * @param string $sql      SQL content.
-	 * @param array  $manifest Backup manifest.
+	 * @param string $journal_dir Private rollback journal directory.
+	 * @return bool
+	 */
+	private function rollback_files( $journal_dir ) {
+		$journal = trailingslashit( $journal_dir ) . 'files.jsonl';
+		if ( ! is_readable( $journal ) ) {
+			return true;
+		}
+		$entries = array_reverse( file( $journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) );
+		foreach ( $entries as $line ) {
+			$entry = json_decode( $line, true );
+			if ( ! is_array( $entry ) || empty( $entry['target'] ) ) {
+				continue;
+			}
+			if ( ! empty( $entry['existed'] ) && is_file( $entry['backup'] ?? '' ) ) {
+				copy( $entry['backup'], $entry['target'] );
+			} elseif ( is_file( $entry['target'] ) ) {
+				wp_delete_file( $entry['target'] );
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Build deterministic auxiliary names for an atomic database exchange.
+	 *
+	 * @param array $manifest Backup manifest.
+	 * @return array
+	 */
+	private function build_table_journal( array $manifest ) {
+		$suffix  = substr( bin2hex( random_bytes( 6 ) ), 0, 12 );
+		$journal = array(
+			'staging' => array(),
+			'old'     => array(),
+			'existed' => array(),
+		);
+		foreach ( $this->get_target_table_names( $manifest ) as $target ) {
+			$base                          = substr( $target, 0, 42 );
+			$journal['staging'][ $target ] = $base . '_zcstage_' . $suffix;
+			$journal['old'][ $target ]     = $base . '_zcold_' . $suffix;
+			$journal['existed'][ $target ] = $this->table_exists( $target );
+		}
+
+		return $journal;
+	}
+
+	/**
+	 * Atomically exchange staged tables with current site tables.
+	 *
+	 * @param array $journal Table exchange journal.
 	 * @return true|WP_Error
 	 */
-	private function import_sql( $sql, array $manifest ) {
+	private function activate_staged_tables( array $journal ) {
+		global $wpdb;
+
+		$renames = array();
+		foreach ( $journal['staging'] as $target => $staging ) {
+			if ( ! $this->table_exists( $staging ) ) {
+				return new WP_Error( 'zoecloud_restore_staging_missing', __( 'A staged restore table is missing.', 'zoe-cloud' ) );
+			}
+			if ( ! empty( $journal['existed'][ $target ] ) ) {
+				$renames[] = $this->quote_identifier( $target ) . ' TO ' . $this->quote_identifier( $journal['old'][ $target ] );
+			}
+			$renames[] = $this->quote_identifier( $staging ) . ' TO ' . $this->quote_identifier( $target );
+		}
+		if ( empty( $renames ) ) {
+			return new WP_Error( 'zoecloud_restore_tables_missing', __( 'The restore manifest contains no database tables.', 'zoe-cloud' ) );
+		}
+		$result = $wpdb->query( 'RENAME TABLE ' . implode( ', ', $renames ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange
+
+		return false === $result ? new WP_Error( 'zoecloud_restore_table_swap_failed', __( 'The atomic database table exchange failed.', 'zoe-cloud' ) ) : true;
+	}
+
+	/**
+	 * Roll back an activated database exchange.
+	 *
+	 * @param array $journal Table exchange journal.
+	 * @return bool
+	 */
+	private function rollback_tables( array $journal ) {
+		global $wpdb;
+
+		$renames = array();
+		foreach ( $journal['staging'] as $target => $staging ) {
+			if ( ! empty( $journal['existed'][ $target ] ) && $this->table_exists( $journal['old'][ $target ] ) && $this->table_exists( $target ) ) {
+				$renames[] = $this->quote_identifier( $target ) . ' TO ' . $this->quote_identifier( $staging );
+				$renames[] = $this->quote_identifier( $journal['old'][ $target ] ) . ' TO ' . $this->quote_identifier( $target );
+			} elseif ( empty( $journal['existed'][ $target ] ) && $this->table_exists( $target ) ) {
+				$wpdb->query( 'DROP TABLE ' . $this->quote_identifier( $target ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange
+			}
+		}
+		if ( $renames ) {
+			$wpdb->query( 'RENAME TABLE ' . implode( ', ', $renames ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange
+		}
+		$this->cleanup_staged_tables( $journal );
+
+		return true;
+	}
+
+	/**
+	 * Drop old tables after a successful restore.
+	 *
+	 * @param array $journal Table exchange journal.
+	 * @return void
+	 */
+	private function finalize_tables( array $journal ) {
+		global $wpdb;
+
+		foreach ( $journal['old'] as $old ) {
+			if ( $this->table_exists( $old ) ) {
+				$wpdb->query( 'DROP TABLE ' . $this->quote_identifier( $old ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange
+			}
+		}
+	}
+
+	/**
+	 * Remove unactivated or rolled-back staging tables.
+	 *
+	 * @param array $journal Table exchange journal.
+	 * @return void
+	 */
+	private function cleanup_staged_tables( array $journal ) {
+		global $wpdb;
+
+		foreach ( array_merge( array_values( $journal['staging'] ), array_values( $journal['old'] ) ) as $table ) {
+			if ( $this->table_exists( $table ) ) {
+				$wpdb->query( 'DROP TABLE ' . $this->quote_identifier( $table ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.SchemaChange
+			}
+		}
+	}
+
+	/**
+	 * Determine whether a database table exists.
+	 *
+	 * @param string $table Table name.
+	 * @return bool
+	 */
+	private function table_exists( $table ) {
+		global $wpdb;
+
+		return $table === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+	}
+
+	/**
+	 * Import SQL statements.
+	 *
+	 * @param string $sql       SQL content.
+	 * @param array  $manifest  Backup manifest.
+	 * @param array  $table_map Optional target-to-staging table map.
+	 * @return true|WP_Error
+	 */
+	private function import_sql( $sql, array $manifest, array $table_map = array() ) {
 		global $wpdb;
 
 		if ( ! is_string( $sql ) ) {
 			return new WP_Error( 'zoecloud_restore_sql_missing', __( 'The database export is missing.', 'zoe-cloud' ) );
 		}
-		$sql        = $this->remap_database_prefix( $sql, $manifest );
+		$sql = $this->remap_database_prefix( $sql, $manifest );
+		foreach ( $table_map as $target => $staging ) {
+			$sql = str_replace( $this->quote_identifier( $target ), $this->quote_identifier( $staging ), $sql );
+		}
 		$statements = $this->split_sql_statements( $sql );
-		$tables     = array_map( array( $this, 'quote_identifier' ), $this->get_target_table_names( $manifest ) );
+		$tables     = array_map( array( $this, 'quote_identifier' ), $table_map ? array_values( $table_map ) : $this->get_target_table_names( $manifest ) );
 
 		foreach ( $statements as $statement ) {
 			if ( '' === $statement ) {
@@ -518,9 +627,9 @@ class ZoeCloud_Restore_Manager {
 	 * @return true|WP_Error
 	 */
 	private function validate_manifest( array $manifest ) {
-		$prefix = (string) ( $manifest['database_prefix'] ?? '' );
-		$tables = $manifest['database_table_names'] ?? null;
-		$origin = $manifest['origin'] ?? null;
+		$prefix       = (string) ( $manifest['database_prefix'] ?? '' );
+		$tables       = $manifest['database_table_names'] ?? null;
+		$origin       = $manifest['origin'] ?? null;
 		$requirements = $manifest['requirements'] ?? null;
 		if ( ! preg_match( '/^[A-Za-z0-9_]+$/', $prefix ) || ! is_array( $tables ) || ! is_array( $origin ) || ! is_array( $requirements ) ) {
 			return new WP_Error( 'zoecloud_restore_manifest_invalid', __( 'The backup manifest is incomplete.', 'zoe-cloud' ) );
@@ -533,7 +642,7 @@ class ZoeCloud_Restore_Manager {
 				return new WP_Error( 'zoecloud_restore_manifest_invalid', __( 'The backup manifest contains an invalid database table.', 'zoe-cloud' ) );
 			}
 		}
-		if ( ! wp_http_validate_url( (string) ( $origin['home_url'] ?? '' ) ) || ! wp_http_validate_url( (string) ( $origin['site_url'] ?? '' ) ) || $prefix !== (string) ( $origin['table_prefix'] ?? '' ) ) {
+		if ( ! wp_http_validate_url( (string) ( $origin['home_url'] ?? '' ) ) || ! wp_http_validate_url( (string) ( $origin['site_url'] ?? '' ) ) || (string) ( $origin['table_prefix'] ?? '' ) !== $prefix ) {
 			return new WP_Error( 'zoecloud_restore_manifest_invalid', __( 'The backup origin metadata is invalid.', 'zoe-cloud' ) );
 		}
 		if ( ! isset( $manifest['files_count'], $manifest['files_size'], $manifest['database_rows'] ) || min( (int) $manifest['files_count'], (int) $manifest['files_size'], (int) $manifest['database_rows'] ) < 0 ) {
@@ -712,6 +821,9 @@ class ZoeCloud_Restore_Manager {
 			if ( 0 === strpos( $normalized, '/' ) || preg_match( '/^[A-Za-z]:/', $normalized ) || false !== strpos( $normalized, "\0" ) || in_array( '..', $segments, true ) ) {
 				return new WP_Error( 'zoecloud_restore_unsafe_archive', __( 'Backup archive contains unsafe paths.', 'zoe-cloud' ), array( 'entry' => $name ) );
 			}
+			if ( 0 === strpos( strtolower( $normalized ), 'files/wp-content/.zoecloud-private/' ) ) {
+				return new WP_Error( 'zoecloud_restore_protected_path', __( 'Backup archive targets ZoeCloud private storage.', 'zoe-cloud' ), array( 'entry' => $name ) );
+			}
 
 			$stats = $zip->statIndex( $index );
 
@@ -863,12 +975,84 @@ class ZoeCloud_Restore_Manager {
 	private function replace_preserving_serialized( $value, $search, $replacement ) {
 		if ( is_serialized( $value ) ) {
 			$unserialized = unserialize( trim( $value ), array( 'allowed_classes' => false ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize
+			if ( $this->contains_incomplete_object( $unserialized ) ) {
+				return $this->replace_serialized_string_tokens( trim( $value ), $search, $replacement );
+			}
 			$replaced     = $this->recursive_replace( $unserialized, $search, $replacement );
 
 			return maybe_serialize( $replaced );
 		}
 
 		return str_replace( $search, $replacement, $value );
+	}
+
+	/**
+	 * Determine whether decoded data contains a class that was deliberately not loaded.
+	 *
+	 * @param mixed $value Decoded serialized value.
+	 * @return bool
+	 */
+	private function contains_incomplete_object( $value ) {
+		if ( is_object( $value ) ) {
+			return '__PHP_Incomplete_Class' === get_class( $value );
+		}
+
+		if ( is_array( $value ) ) {
+			foreach ( $value as $item ) {
+				if ( $this->contains_incomplete_object( $item ) ) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Replace serialized string tokens while recalculating byte lengths.
+	 *
+	 * This parser uses the declared token length instead of a regular expression,
+	 * so embedded quotes and semicolons cannot truncate a value.
+	 *
+	 * @param string $serialized  Serialized payload.
+	 * @param string $search      Search string.
+	 * @param string $replacement Replacement string.
+	 * @return string
+	 */
+	private function replace_serialized_string_tokens( $serialized, $search, $replacement ) {
+		$output = '';
+		$offset = 0;
+		$total  = strlen( $serialized );
+
+		while ( $offset < $total ) {
+			$start = strpos( $serialized, 's:', $offset );
+			if ( false === $start ) {
+				$output .= substr( $serialized, $offset );
+				break;
+			}
+
+			$output .= substr( $serialized, $offset, $start - $offset );
+			if ( ! preg_match( '/\Gs:(\d+):"/A', $serialized, $matches, 0, $start ) ) {
+				$output .= 's:';
+				$offset  = $start + 2;
+				continue;
+			}
+
+			$header_length = strlen( $matches[0] );
+			$value_length  = (int) $matches[1];
+			$value_start   = $start + $header_length;
+			$value_end     = $value_start + $value_length;
+			if ( $value_end + 2 > $total || '";' !== substr( $serialized, $value_end, 2 ) ) {
+				return $serialized;
+			}
+
+			$value   = substr( $serialized, $value_start, $value_length );
+			$value   = str_replace( $search, $replacement, $value );
+			$output .= 's:' . strlen( $value ) . ':"' . $value . '";';
+			$offset  = $value_end + 2;
+		}
+
+		return $output;
 	}
 
 	/**

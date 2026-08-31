@@ -39,6 +39,7 @@ jobs:
           WP_VERSION: ${{ matrix.wordpress }}
           WP_TESTS_DB_HOST: 127.0.0.1
       - run: composer lint:php
+      - run: composer analyse
       - run: composer test
         env:
           WP_TESTS_DIR: /tmp/wordpress-tests-lib
@@ -52,3 +53,13 @@ jobs:
         with:
           name: zoe-cloud-1.0.0
           path: dist/zoe-cloud-1.0.0.zip
+
+  plugin-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash bin/build-zip.sh
+      - run: mkdir plugin-check-build && unzip -q dist/zoe-cloud-1.0.0.zip -d plugin-check-build
+      - uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: ./plugin-check-build/zoe-cloud

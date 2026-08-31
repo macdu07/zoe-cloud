@@ -1,0 +1,15 @@
+includes:
+	- vendor/szepeviktor/phpstan-wordpress/extension.neon
+
+parameters:
+	level: 3
+	paths:
+		- zoe-cloud.php
+		- uninstall.php
+		- includes
+	scanFiles:
+		- vendor/php-stubs/wp-cli-stubs/wp-cli-stubs.php
+	bootstrapFiles:
+		- vendor/szepeviktor/phpstan-wordpress/bootstrap.php
+		- phpstan-bootstrap.php
+	tmpDir: /tmp/zoecloud-phpstan

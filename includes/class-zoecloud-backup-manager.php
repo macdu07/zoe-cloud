@@ -9,6 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Database exports, checksum indexes, and downloads require bounded streaming I/O for multi-gigabyte backups.
+
 /**
  * Creates, stores, streams, and deletes backup archives.
  */
@@ -92,18 +94,6 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Queue a backup through the durable job engine.
-	 *
-	 * @deprecated 1.0.0 Use enqueue_backup().
-	 * @param array $args Backup arguments.
-	 * @return array|WP_Error
-	 */
-	public function create_backup( array $args = array() ) {
-		_deprecated_function( __METHOD__, '1.0.0', 'ZoeCloud_Backup_Manager::enqueue_backup' );
-
-		return $this->enqueue_backup( $args );
-	}
-	/**
 	 * List stored backups.
 	 *
 	 * @return array
@@ -113,14 +103,14 @@ class ZoeCloud_Backup_Manager {
 	}
 
 	/**
-	 * Supply v0.2 metadata for records created by older releases.
+	 * Normalize repository metadata for the authenticated API.
 	 *
 	 * @param array $record Backup record.
 	 * @return array
 	 */
 	private function normalize_backup_record( array $record ) {
 		$manifest               = isset( $record['manifest'] ) && is_array( $record['manifest'] ) ? $record['manifest'] : array();
-		$record['source']       = sanitize_key( $record['source'] ?? ( ! empty( $record['imported'] ) ? 'imported' : 'manual' ) );
+		$record['source']       = sanitize_key( $record['source'] ?? 'manual' );
 		$record['scope']        = sanitize_key( $record['scope'] ?? ( ! empty( $manifest['include_core'] ) ? 'full' : 'site_data' ) );
 		$record['locked']       = ! empty( $record['locked'] );
 		$record['checksum']     = (string) ( $record['checksum'] ?? '' );
@@ -146,7 +136,7 @@ class ZoeCloud_Backup_Manager {
 
 		$payload = array(
 			'include_core' => ! empty( $args['include_core'] ),
-			'upload_cloud' => ! empty( $args['upload_cloud'] ) || ! empty( $args['upload_drive'] ),
+			'upload_cloud' => ! empty( $args['upload_cloud'] ),
 			'source'       => in_array( $args['source'] ?? 'manual', array( 'manual', 'scheduled', 'safety' ), true ) ? $args['source'] : 'manual',
 			'scope'        => ! empty( $args['include_core'] ) ? 'full' : 'site_data',
 		);
@@ -221,7 +211,6 @@ class ZoeCloud_Backup_Manager {
 					case 'finalize':
 						$result = $this->process_job_finalize( $job );
 						break;
-					case 'upload_drive': // Backwards compatibility for jobs queued before v0.2.
 					case 'cloud_upload':
 						$result = $this->process_job_cloud_upload( $job );
 						break;
@@ -418,9 +407,9 @@ class ZoeCloud_Backup_Manager {
 			'home_url'             => home_url(),
 			'site_url'             => site_url(),
 			'origin'               => array(
-				'host'      => (string) $domain,
-				'home_url'  => home_url(),
-				'site_url'  => site_url(),
+				'host'         => (string) $domain,
+				'home_url'     => home_url(),
+				'site_url'     => site_url(),
 				'table_prefix' => $wpdb->prefix,
 			),
 			'scope'                => ! empty( $args['include_core'] ) ? 'full' : 'site_data',
@@ -828,7 +817,7 @@ class ZoeCloud_Backup_Manager {
 	/**
 	 * Delete a backup record and its local file.
 	 *
-	 * @param string $backup_id Backup ID or filename.
+	 * @param string $backup_id Backup UUID.
 	 * @return true|WP_Error
 	 */
 	public function delete_backup( $backup_id ) {
@@ -1027,7 +1016,7 @@ class ZoeCloud_Backup_Manager {
 		$this->enqueue_backup(
 			array(
 				'include_core' => false,
-				'upload_cloud' => ! empty( $settings['auto_upload_cloud'] ) || ! empty( $settings['auto_upload_drive'] ),
+				'upload_cloud' => ! empty( $settings['auto_upload_cloud'] ),
 				'source'       => 'scheduled',
 			)
 		);

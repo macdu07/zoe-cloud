@@ -116,7 +116,12 @@ class ZoeCloud_CLI {
 	 * @return void
 	 */
 	public function restore( $args, $assoc_args ) {
-		$id     = $args[0] ?? '';
+		$id       = $args[0] ?? '';
+		$hostname = sanitize_text_field( (string) ( $assoc_args['hostname'] ?? '' ) );
+		$current  = (string) wp_parse_url( home_url(), PHP_URL_HOST );
+		if ( '' === $hostname || ! hash_equals( strtolower( $current ), strtolower( $hostname ) ) ) {
+			WP_CLI::error( 'Pass --hostname=' . $current . ' to confirm the restore target.' );
+		}
 		$result = $this->backups->verify_backup( $id );
 		if ( is_wp_error( $result ) ) {
 			WP_CLI::error( $result->get_error_message() );
@@ -168,6 +173,11 @@ class ZoeCloud_CLI {
 				$this->backups->run_backup_job( $id, 25, 30 );
 			} elseif ( 'restore' === $job['type'] ) {
 				$this->controller->run_restore_job( $id );
+				$restore = $this->jobs->find( $id );
+				$safety  = $restore['state']['safety_job_id'] ?? '';
+				if ( $safety ) {
+					$this->backups->run_backup_job( $safety, 25, 30 );
+				}
 			}
 			$job = $this->jobs->find( $id );
 			WP_CLI::log( sprintf( '%d%% %s', $job['progress'], $job['message'] ) );
@@ -179,6 +189,8 @@ class ZoeCloud_CLI {
 				WP_CLI::error( $job['last_error'] ? $job['last_error'] : 'Job failed.' );
 			}
 			if ( 'waiting' === $job['status'] ) {
+				sleep( 1 );
+			} elseif ( 'restore' === $job['type'] ) {
 				sleep( 1 );
 			}
 		}

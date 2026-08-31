@@ -9,6 +9,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Multipart uploads require bounded streaming and cannot load backup archives into memory.
+// phpcs:disable PluginCheck.CodeAnalysis.Offloading.OffloadedContent -- User-configured S3/R2 backup storage is the plugin's disclosed primary feature, never an automatic asset CDN.
+
 /**
  * Handles S3-compatible cloud uploads and deletes.
  */
@@ -438,7 +441,25 @@ class ZoeCloud_R2_Service {
 			return new WP_Error( 'zoecloud_cloud_download_invalid', __( 'Cloud backup metadata does not match the configured destination.', 'zoe-cloud' ) );
 		}
 
-		$key      = ltrim( (string) $cloud['key'], '/' );
+		$key          = ltrim( (string) $cloud['key'], '/' );
+		$head_headers = $this->build_signed_headers( $config, 'HEAD', $key, '', true );
+		$head         = wp_remote_request(
+			$this->build_upload_url( $config, $key ),
+			array(
+				'method'  => 'HEAD',
+				'timeout' => 30,
+				'headers' => $head_headers,
+			)
+		);
+		if ( is_wp_error( $head ) || wp_remote_retrieve_response_code( $head ) >= 300 ) {
+			return is_wp_error( $head ) ? $head : new WP_Error( 'zoecloud_cloud_head_failed', $this->format_cloud_error( $config, $head, __( 'metadata verification failed.', 'zoe-cloud' ) ) );
+		}
+		$head_checksum = (string) wp_remote_retrieve_header( $head, 'x-amz-meta-zoecloud-sha256' );
+		$head_size     = (int) wp_remote_retrieve_header( $head, 'content-length' );
+		if ( ! preg_match( '/^[a-f0-9]{64}$/', $head_checksum ) || ( ! empty( $cloud['size'] ) && (int) $cloud['size'] !== $head_size ) ) {
+			return new WP_Error( 'zoecloud_cloud_metadata_invalid', __( 'Cloud backup metadata is missing or inconsistent.', 'zoe-cloud' ) );
+		}
+
 		$headers  = $this->build_signed_headers( $config, 'GET', $key, '', true );
 		$response = wp_remote_get(
 			$this->build_upload_url( $config, $key ),
@@ -455,8 +476,12 @@ class ZoeCloud_R2_Service {
 		}
 
 		$remote_checksum = (string) wp_remote_retrieve_header( $response, 'x-amz-meta-zoecloud-sha256' );
-		$expected        = preg_match( '/^[a-f0-9]{64}$/', $expected_checksum ) ? $expected_checksum : $remote_checksum;
-		$actual          = is_readable( $destination ) ? hash_file( 'sha256', $destination ) : '';
+		$expected        = preg_match( '/^[a-f0-9]{64}$/', $expected_checksum ) ? $expected_checksum : $head_checksum;
+		if ( ! hash_equals( $head_checksum, $remote_checksum ) ) {
+			wp_delete_file( $destination );
+			return new WP_Error( 'zoecloud_cloud_metadata_changed', __( 'Cloud backup metadata changed during download.', 'zoe-cloud' ) );
+		}
+		$actual = is_readable( $destination ) ? hash_file( 'sha256', $destination ) : '';
 		if ( ! preg_match( '/^[a-f0-9]{64}$/', $expected ) || ! hash_equals( $expected, $actual ) ) {
 			wp_delete_file( $destination );
 			return new WP_Error( 'zoecloud_cloud_checksum_mismatch', __( 'The downloaded cloud backup failed integrity verification.', 'zoe-cloud' ) );

@@ -26,7 +26,7 @@ class ZoeCloud_Crypto {
 	 * Encrypt a string for storage.
 	 *
 	 * @param string $value Raw value.
-	 * @return string
+	 * @return string|WP_Error
 	 */
 	public function encrypt( $value ) {
 		if ( '' === (string) $value ) {
@@ -58,7 +58,7 @@ class ZoeCloud_Crypto {
 	 * Decrypt a stored value.
 	 *
 	 * @param string $value Stored value.
-	 * @return string
+	 * @return string|WP_Error
 	 */
 	public function decrypt( $value ) {
 		if ( '' === (string) $value ) {

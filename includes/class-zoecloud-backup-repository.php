@@ -26,7 +26,7 @@ class ZoeCloud_Backup_Repository {
 		$data     = array(
 			'id'                  => $id,
 			'filename'            => sanitize_file_name( $record['filename'] ?? '' ),
-			'storage_key'         => sanitize_file_name( $record['storage_key'] ?? ( $record['filename'] ?? '' ) ),
+			'storage_key'         => sanitize_file_name( $record['storage_key'] ?? '' ),
 			'local_status'        => sanitize_key( $record['local_status'] ?? 'available' ),
 			'cloud_status'        => sanitize_key( $record['cloud_status'] ?? ( empty( $record['cloud'] ) ? 'local' : 'available' ) ),
 			'verification_status' => sanitize_key( $record['verification_status'] ?? ( empty( $record['checksum'] ) ? 'pending' : 'verified' ) ),
