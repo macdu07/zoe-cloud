@@ -47,6 +47,27 @@ class ZoeCloud_Admin {
 		add_action( 'admin_menu', array( $this, 'register_menu' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
+		add_filter( 'plugin_action_links_' . plugin_basename( ZOECLOUD_PLUGIN_FILE ), array( $this, 'add_plugin_action_links' ) );
+	}
+
+	/**
+	 * Add a direct dashboard link to the Plugins screen.
+	 *
+	 * @param array $links Existing plugin action links.
+	 * @return array
+	 */
+	public function add_plugin_action_links( $links ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return $links;
+		}
+
+		$dashboard = sprintf(
+			'<a href="%1$s">%2$s</a>',
+			esc_url( admin_url( 'admin.php?page=zoecloud' ) ),
+			esc_html__( 'Dashboard', 'zoe-cloud' )
+		);
+
+		return array_merge( array( 'zoecloud_dashboard' => $dashboard ), $links );
 	}
 
 	/**
