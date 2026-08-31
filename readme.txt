@@ -122,6 +122,10 @@ No. Stored filenames are opaque and downloads require an authenticated administr
 
 No. Public restore supports only ZoeCloud v2 archives. SQL statements and table names outside the signed manifest scope are rejected.
 
+= Can I clear the Activity history? =
+
+Yes. The Activity tab has a **Clear activity** action that removes finished and failed job records and their event logs without touching backups or active jobs. ZoeCloud also keeps the newest 100 finished jobs automatically.
+
 = Will uninstall delete my backups? =
 
 Not by default. Enable the explicit destructive uninstall option first if you want ZoeCloud to remove its tables, settings, and local backup storage.

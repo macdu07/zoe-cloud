@@ -231,6 +231,45 @@ class ZoeCloud_Job_Repository {
 	}
 
 	/**
+	 * Remove logs and finished job records while keeping active work intact.
+	 *
+	 * @return int Number of finished jobs removed.
+	 */
+	public function clear_history() {
+		global $wpdb;
+
+		$jobs = ZoeCloud_Schema::table( 'jobs' );
+		$ids  = $wpdb->get_col(
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery
+			"SELECT id FROM {$jobs} WHERE status IN ('completed','failed','cancelled')"
+		);
+
+		return $this->delete_history_jobs( $ids );
+	}
+
+	/**
+	 * Keep a bounded number of finished jobs and their events.
+	 *
+	 * @param int $keep Number of newest finished jobs to retain.
+	 * @return int Number of finished jobs removed.
+	 */
+	public function prune_history( $keep = 100 ) {
+		global $wpdb;
+
+		$jobs = ZoeCloud_Schema::table( 'jobs' );
+		$keep = min( 1000, max( 0, absint( $keep ) ) );
+		$ids  = $wpdb->get_col(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"SELECT id FROM {$jobs} WHERE status IN ('completed','failed','cancelled') ORDER BY created_at DESC LIMIT %d, 1000",
+				$keep
+			)
+		);
+
+		return $this->delete_history_jobs( $ids );
+	}
+
+	/**
 	 * Return events for a job.
 	 *
 	 * @param string $job_id Job UUID.
@@ -243,6 +282,43 @@ class ZoeCloud_Job_Repository {
 		$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT stage,status,message,created_at AS time FROM {$table} WHERE job_id = %s ORDER BY id ASC LIMIT 100", $job_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery
 
 		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * Delete events and jobs by generated UUIDs.
+	 *
+	 * @param array $ids Job UUIDs.
+	 * @return int Number of jobs removed.
+	 */
+	private function delete_history_jobs( array $ids ) {
+		global $wpdb;
+
+		$ids = array_values( array_filter( array_map( 'sanitize_text_field', $ids ) ) );
+		if ( empty( $ids ) ) {
+			return 0;
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $ids ), '%s' ) );
+		$args         = $ids;
+		$events       = ZoeCloud_Schema::table( 'job_events' );
+		$wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"DELETE FROM {$events} WHERE job_id IN ({$placeholders})",
+				...$args
+			)
+		);
+
+		$jobs   = ZoeCloud_Schema::table( 'jobs' );
+		$deleted = $wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"DELETE FROM {$jobs} WHERE id IN ({$placeholders}) AND status IN ('completed','failed','cancelled')",
+				...$args
+			)
+		);
+
+		return false === $deleted ? 0 : (int) $deleted;
 	}
 
 	/**

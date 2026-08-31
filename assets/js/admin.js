@@ -201,6 +201,43 @@
 		if ( ! jobs.length ) { table.innerHTML = `<tr><td colspan="5" class="zoecloud-empty">${ escapeHtml( t( 'noActivity', 'No activity yet.' ) ) }</td></tr>`; return; }
 		table.innerHTML = jobs.map( ( job ) => `<tr><td><strong>${ escapeHtml( t( job.type, job.type ) ) }</strong><small class="zoecloud-id">${ escapeHtml( job.id ) }</small></td><td>${ escapeHtml( formatDate( job.created_at ) ) }</td><td>${ statusBadge( job.status, t( job.status, job.status ) ) }</td><td><strong>${ escapeHtml( job.message || '' ) }</strong><small>${ escapeHtml( job.events?.length ? `${ job.events.length } ${ t( 'events', 'events' ) }` : '' ) }</small></td><td><a class="button" href="${ escapeHtml( buildUrl( `activity/${ encodeURIComponent( job.id ) }/download?_wpnonce=${ encodeURIComponent( config.nonce ) }` ) ) }">${ escapeHtml( t( 'downloadLog', 'Download log' ) ) }</a></td></tr>` ).join( '' );
 	};
+
+	const activityPanel = $( '#zoecloud-panel-activity' );
+	const activityHeading = activityPanel?.querySelector( '.zoecloud-section-heading' );
+	const activityFilter = $( '#zoecloud-activity-filter' );
+	if ( activityHeading && activityFilter && ! $( '#zoecloud-clear-activity' ) ) {
+		const activityToolbar = document.createElement( 'div' );
+		activityToolbar.className = 'zoecloud-toolbar';
+		const clearActivityButton = document.createElement( 'button' );
+		clearActivityButton.type = 'button';
+		clearActivityButton.className = 'button';
+		clearActivityButton.id = 'zoecloud-clear-activity';
+		clearActivityButton.textContent = t( 'clearActivity', 'Clear activity' );
+		activityToolbar.append( activityFilter, clearActivityButton );
+		activityHeading.append( activityToolbar );
+
+		const activityCard = activityPanel.querySelector( '.zoecloud-card' );
+		const activityFeedback = document.createElement( 'div' );
+		activityFeedback.id = 'zoecloud-activity-feedback';
+		activityFeedback.className = 'zoecloud-feedback';
+		activityFeedback.setAttribute( 'aria-live', 'polite' );
+		activityCard?.append( activityFeedback );
+		clearActivityButton.addEventListener( 'click', async () => {
+			if ( ! window.confirm( t( 'clearActivityConfirm', 'Clear completed and failed activity logs? Active jobs will remain.' ) ) ) return;
+			clearActivityButton.disabled = true;
+			feedback( '#zoecloud-activity-feedback', t( 'loading', 'Working…' ) );
+			try {
+				const result = await request( 'activity', { method: 'DELETE' } );
+				const deleted = Number( result.deleted ) || 0;
+				feedback( '#zoecloud-activity-feedback', deleted ? t( 'activityCleared', 'Cleared %d activity records.' ).replace( '%d', deleted ) : t( 'activityNothingToClear', 'There are no finished activity records to clear.' ) );
+				await refresh();
+			} catch ( error ) {
+				feedback( '#zoecloud-activity-feedback', error.message, true );
+			} finally {
+				clearActivityButton.disabled = false;
+			}
+		} );
+	}
 	const renderCloudBackups = ( objects ) => {
 		const table = $( '#zoecloud-cloud-backups' ); if ( ! table ) return;
 		if ( ! objects.length ) { table.innerHTML = `<tr><td colspan="4" class="zoecloud-empty">${ escapeHtml( t( 'noBackups', 'No cloud backups found.' ) ) }</td></tr>`; return; }

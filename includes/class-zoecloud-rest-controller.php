@@ -195,9 +195,16 @@ class ZoeCloud_REST_Controller {
 			'zoecloud/v1',
 			'/activity',
 			array(
-				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => array( $this, 'list_activity' ),
-				'permission_callback' => array( $this, 'permissions' ),
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => array( $this, 'list_activity' ),
+					'permission_callback' => array( $this, 'permissions' ),
+				),
+				array(
+					'methods'             => WP_REST_Server::DELETABLE,
+					'callback'            => array( $this, 'clear_activity' ),
+					'permission_callback' => array( $this, 'permissions' ),
+				),
 			)
 		);
 		register_rest_route(
@@ -494,6 +501,11 @@ class ZoeCloud_REST_Controller {
 	/** Return backup and restore activity ordered newest first. */
 	public function list_activity() {
 		return rest_ensure_response( $this->get_all_activity() );
+	}
+
+	/** Clear finished jobs and their event logs without touching backups or active jobs. */
+	public function clear_activity() {
+		return rest_ensure_response( array( 'deleted' => $this->jobs->clear_history() ) );
 	}
 
 	/**

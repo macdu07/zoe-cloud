@@ -296,6 +296,11 @@ class ZoeCloud_Admin {
 					'queued'            => __( 'Queued', 'zoe-cloud' ),
 					'events'            => __( 'events', 'zoe-cloud' ),
 					'noActivity'        => __( 'No activity yet.', 'zoe-cloud' ),
+					'clearActivity'     => __( 'Clear activity', 'zoe-cloud' ),
+					'clearActivityConfirm' => __( 'Clear completed and failed activity logs? Active jobs will remain.', 'zoe-cloud' ),
+					/* translators: %d: Number of activity records removed. */
+					'activityCleared'   => __( 'Cleared %d activity records.', 'zoe-cloud' ),
+					'activityNothingToClear' => __( 'There are no finished activity records to clear.', 'zoe-cloud' ),
 					'downloadLog'       => __( 'Download log', 'zoe-cloud' ),
 					'origin'            => __( 'Origin', 'zoe-cloud' ),
 					'files'             => __( 'Files', 'zoe-cloud' ),

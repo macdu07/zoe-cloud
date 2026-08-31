@@ -127,6 +127,10 @@ class ZoeCloud_Plugin {
 			( new ZoeCloud_Storage() )->cleanup_expired();
 			set_transient( 'zoecloud_cleanup_recent', 1, HOUR_IN_SECONDS );
 		}
+		if ( ! get_transient( 'zoecloud_history_cleanup_recent' ) ) {
+			$this->jobs->prune_history( 100 );
+			set_transient( 'zoecloud_history_cleanup_recent', 1, HOUR_IN_SECONDS );
+		}
 		foreach ( $this->jobs->due( 5 ) as $job_id ) {
 			$job = $this->jobs->find( $job_id );
 			if ( ! $job ) {
