@@ -219,6 +219,12 @@
 .zoecloud-form-grid small,
 .zoecloud-field small { color: var(--zoe-muted); font-weight: 400; }
 .zoecloud-field { margin: 20px 0; }
+.zoecloud-url-hint { color: var(--zoe-muted); margin: -8px 0 20px; }
+.zoecloud-hostname-value { align-items: center; display: inline-flex; gap: 6px; }
+.zoecloud-copy-hostname { align-items: center; background: transparent; border: 0; color: var(--zoe-muted); cursor: pointer; display: inline-flex; flex: 0 0 auto; height: 28px; justify-content: center; padding: 0; width: 28px; }
+.zoecloud-copy-hostname:hover { color: var(--zoe-blue); }
+.zoecloud-copy-hostname:focus-visible { border-radius: 5px; box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--zoe-blue); outline: none; }
+.zoecloud-copy-hostname.is-copied { color: var(--zoe-success); }
 .zoecloud-provider-fields[hidden] { display: none; }
 .zoecloud-provider-fields { align-items: start; }
 .zoecloud-provider-fields > label { align-content: start; align-self: start; width: 100%; }

@@ -167,13 +167,14 @@ class ZoeCloud_Restore_Manager {
 	/**
 	 * Restore a site from a backup file.
 	 *
-	 * @param string $zip_path    Archive path.
-	 * @param string $search      Old URL.
-	 * @param string $replacement New URL.
-	 * @param bool   $confirmed   Whether the destructive restore was confirmed.
+	 * @param string        $zip_path          Archive path.
+	 * @param string        $search            Old URL.
+	 * @param string        $replacement       New URL.
+	 * @param bool          $confirmed         Whether the destructive restore was confirmed.
+	 * @param callable|null $progress_callback Optional progress callback receiving (int $progress, string $message).
 	 * @return true|WP_Error
 	 */
-	public function restore_backup( $zip_path, $search = '', $replacement = '', $confirmed = false ) {
+	public function restore_backup( $zip_path, $search = '', $replacement = '', $confirmed = false, $progress_callback = null ) {
 		if ( ! $confirmed ) {
 			return new WP_Error( 'zoecloud_restore_confirmation_required', __( 'Restore confirmation is required.', 'zoe-cloud' ) );
 		}
@@ -183,6 +184,7 @@ class ZoeCloud_Restore_Manager {
 		if ( is_wp_error( $validated ) ) {
 			return $validated;
 		}
+		$this->report_progress( $progress_callback, 40, __( 'Backup validated. Preparing temporary restore areas.', 'zoe-cloud' ) );
 
 		$temp_dir = trailingslashit( $this->storage->get_subdirectory( 'restore' ) ) . 'job-' . bin2hex( random_bytes( 8 ) );
 		wp_mkdir_p( $temp_dir );
@@ -201,6 +203,7 @@ class ZoeCloud_Restore_Manager {
 		}
 
 		$zip->close();
+		$this->report_progress( $progress_callback, 50, __( 'Archive extracted. Importing database into staging tables.', 'zoe-cloud' ) );
 
 		$journal_dir = $temp_dir . '/journal';
 		wp_mkdir_p( $journal_dir );
@@ -215,16 +218,21 @@ class ZoeCloud_Restore_Manager {
 			$this->cleanup_directory( $temp_dir );
 			return $imported;
 		}
+		$this->report_progress( $progress_callback, 68, __( 'Database staged. Exchanging tables atomically.', 'zoe-cloud' ) );
 		$this->set_maintenance_mode( true );
-		$activated = $this->activate_staged_tables( $table_journal );
-		if ( is_wp_error( $activated ) ) {
+		try {
+			$activated = $this->activate_staged_tables( $table_journal );
+		} finally {
 			$this->set_maintenance_mode( false );
+		}
+		if ( is_wp_error( $activated ) ) {
 			$this->cleanup_staged_tables( $table_journal );
 			$this->cleanup_directory( $temp_dir );
 			return $activated;
 		}
 
 		$this->restore_preserved_options( $preserved_options );
+		$this->report_progress( $progress_callback, 74, __( 'Database restored. Applying URL replacements.', 'zoe-cloud' ) );
 
 		if ( $search && $replacement && $search !== $replacement ) {
 			$tables   = $this->get_target_table_names( $validated['manifest'] );
@@ -239,6 +247,7 @@ class ZoeCloud_Restore_Manager {
 		}
 
 		$files_restored = $this->restore_files( $temp_dir . '/files', $journal_dir );
+		$this->report_progress( $progress_callback, 92, __( 'Files restored. Finalizing recovery point.', 'zoe-cloud' ) );
 		if ( is_wp_error( $files_restored ) ) {
 			$this->rollback_files( $journal_dir );
 			$this->rollback_tables( $table_journal );
@@ -249,6 +258,20 @@ class ZoeCloud_Restore_Manager {
 		$this->cleanup_directory( $temp_dir );
 
 		return is_wp_error( $files_restored ) ? $files_restored : true;
+	}
+
+	/**
+	 * Report a restore milestone without making progress persistence mandatory.
+	 *
+	 * @param callable|null $callback Progress callback.
+	 * @param int           $progress Progress percentage.
+	 * @param string        $message Human-readable status.
+	 * @return void
+	 */
+	private function report_progress( $callback, $progress, $message ) {
+		if ( is_callable( $callback ) ) {
+			call_user_func( $callback, $progress, $message );
+		}
 	}
 
 	/**

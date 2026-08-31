@@ -623,7 +623,11 @@ class ZoeCloud_REST_Controller {
 				}
 				throw new RuntimeException( sprintf( 'Restore failed and was rolled back: %s', $job['state']['restore_error'] ?? __( 'Unknown restore error.', 'zoe-cloud' ) ) );
 			} else {
-				$result = $this->restore_manager->restore_backup( $this->backup_manager->get_backup_path( $job['args']['backup_id'] ), $job['args']['search'], $job['args']['replace'], true );
+				$progress_callback = function ( $progress, $message ) use ( $job ) {
+					$this->jobs->update( $job['id'], array( 'progress' => $progress ) );
+					$this->jobs->event( $job['id'], 'restoring', 'running', $message );
+				};
+				$result = $this->restore_manager->restore_backup( $this->backup_manager->get_backup_path( $job['args']['backup_id'] ), $job['args']['search'], $job['args']['replace'], true, $progress_callback );
 				if ( is_wp_error( $result ) ) {
 					$job['state']['restore_error'] = $result->get_error_message();
 					$this->advance_restore_job( $job, 'rolling_back', 80, __( 'Restore failed. Rolling back from the safety backup.', 'zoe-cloud' ), 'rolling_back' );

@@ -9,7 +9,7 @@
 	const t = ( key, fallback = '' ) => config.i18n?.[ key ] || fallback;
 	const $ = ( selector, root = document ) => root.querySelector( selector );
 	const $$ = ( selector, root = document ) => Array.from( root.querySelectorAll( selector ) );
-	const state = { status: null, backups: [], activity: [], selected: new Set(), restoreFilename: '', polling: null };
+	const state = { status: null, backups: [], activity: [], selected: new Set(), restoreFilename: '', polling: null, pollFailures: 0, reloadTimer: null };
 
 	const escapeHtml = ( value ) => String( value ?? '' ).replace( /[&<>"']/g, ( char ) => ( { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' } )[ char ] );
 	const formatBytes = ( bytes ) => {
@@ -47,7 +47,11 @@
 			body: options.body ? JSON.stringify( options.body ) : undefined,
 		} );
 		const data = await response.json().catch( () => ( {} ) );
-		if ( ! response.ok ) throw new Error( data.message || t( 'unknownError', 'Request failed.' ) );
+		if ( ! response.ok ) {
+			const error = new Error( data.message || t( 'unknownError', 'Request failed.' ) );
+			error.status = response.status;
+			throw error;
+		}
 		return data;
 	};
 	const feedback = ( selector, message, error = false ) => {
@@ -155,14 +159,36 @@
 		window.clearTimeout( state.polling );
 		try {
 			let job = await request( `jobs/${ encodeURIComponent( id ) }` );
+			state.pollFailures = 0;
 			renderJob( job );
 			if ( [ 'completed', 'failed' ].includes( job.status ) ) {
-				feedback( isRestore ? '#zoecloud-restore-feedback' : '#zoecloud-feedback', job.message, job.status === 'failed' );
-				await refresh();
+				const failed = job.status === 'failed';
+				const message = isRestore && ! failed ? t( 'restoreCompleted', 'Restore completed successfully. This page will reload shortly.' ) : job.message;
+				feedback( '#zoecloud-feedback', message, failed );
+				try {
+					await refresh();
+				} catch ( refreshError ) {
+					// The restored site may briefly interrupt the health request. The
+					// terminal job state is already known, so do not hide its result.
+				}
+				if ( isRestore && ! failed ) {
+					window.clearTimeout( state.reloadTimer );
+					state.reloadTimer = window.setTimeout( () => window.location.reload(), 1800 );
+				}
 				return;
 			}
 			state.polling = window.setTimeout( () => pollJob( id, isRestore ), 2000 );
-		} catch ( error ) { feedback( isRestore ? '#zoecloud-restore-feedback' : '#zoecloud-feedback', error.message, true ); }
+		} catch ( error ) {
+			// WordPress may briefly return 503 while the final table exchange enables
+			// maintenance mode. Keep polling so the UI recovers automatically.
+			if ( error.status >= 500 || ! error.status ) {
+				state.pollFailures += 1;
+				feedback( isRestore ? '#zoecloud-restore-feedback' : '#zoecloud-feedback', t( 'reconnecting', 'The job is still running. Reconnecting…' ) );
+				state.polling = window.setTimeout( () => pollJob( id, isRestore ), Math.min( 10000, 2000 + ( state.pollFailures * 500 ) ) );
+				return;
+			}
+			feedback( isRestore ? '#zoecloud-restore-feedback' : '#zoecloud-feedback', error.message, true );
+		}
 	};
 
 	const renderActivity = () => {
@@ -211,6 +237,47 @@
 	$( '#zoecloud-bulk-delete' )?.addEventListener( 'click', () => deleteSelected().catch( ( error ) => feedback( '#zoecloud-feedback', error.message, true ) ) );
 
 	const dialog = $( '#zoecloud-restore-dialog' );
+	const hostnameInput = $( '#zoecloud-restore-hostname' );
+	const restoreUrlGrid = dialog?.querySelector( '.zoecloud-form-grid' );
+	if ( restoreUrlGrid && ! dialog.querySelector( '.zoecloud-url-hint' ) ) {
+		const restoreUrlHint = document.createElement( 'p' );
+		restoreUrlHint.className = 'zoecloud-url-hint';
+		restoreUrlHint.textContent = t( 'restoreUrlHint', 'Leave both URLs unchanged for a same-site restore. Change them only when moving to a different domain, protocol, or directory.' );
+		restoreUrlGrid.insertAdjacentElement( 'afterend', restoreUrlHint );
+	}
+	const copyHostname = document.createElement( 'button' );
+	if ( hostnameInput ) {
+		copyHostname.type = 'button';
+		copyHostname.className = 'zoecloud-copy-hostname';
+		copyHostname.setAttribute( 'aria-label', t( 'copyHostname', 'Copy hostname' ) );
+		copyHostname.title = t( 'copyHostname', 'Copy hostname' );
+		copyHostname.innerHTML = `<span class="dashicons dashicons-admin-page" aria-hidden="true"></span><span class="screen-reader-text">${ escapeHtml( t( 'copyHostname', 'Copy hostname' ) ) }</span>`;
+		const hostnameField = hostnameInput.closest( '.zoecloud-field' );
+		const hostnameValue = hostnameField?.querySelector( 'strong' );
+		if ( hostnameValue ) {
+			const hostnameRow = document.createElement( 'span' );
+			hostnameRow.className = 'zoecloud-hostname-value';
+			hostnameValue.parentNode.insertBefore( hostnameRow, hostnameValue );
+			hostnameRow.append( hostnameValue, copyHostname );
+		} else {
+			hostnameField?.append( copyHostname );
+		}
+		copyHostname.addEventListener( 'click', async () => {
+			try {
+				if ( navigator.clipboard?.writeText ) {
+					await navigator.clipboard.writeText( config.hostname );
+				} else {
+					hostnameInput.focus(); hostnameInput.select();
+					if ( ! document.execCommand( 'copy' ) ) throw new Error( 'copy_failed' );
+				}
+				copyHostname.classList.add( 'is-copied' );
+				feedback( '#zoecloud-restore-feedback', t( 'hostnameCopied', 'Hostname copied.' ) );
+				window.setTimeout( () => copyHostname.classList.remove( 'is-copied' ), 1400 );
+			} catch ( error ) {
+				feedback( '#zoecloud-restore-feedback', t( 'copyFailed', 'Could not copy the hostname.' ), true );
+			}
+		} );
+	}
 	const openRestore = async ( backupId ) => {
 		state.restoreBackupId = backupId; $( '#zoecloud-restore-hostname' ).value = ''; $( '#zoecloud-run-restore' ).disabled = true; dialog.showModal();
 		$( '#zoecloud-restore-plan' ).innerHTML = `<p>${ escapeHtml( t( 'loading', 'Inspecting backup…' ) ) }</p>`;
@@ -227,7 +294,9 @@
 		const button = event.currentTarget; button.disabled = true; feedback( '#zoecloud-restore-feedback', t( 'loading', 'Queueing protected restore…' ) );
 		try {
 			const job = await request( 'restores', { method: 'POST', body: { backup_id: state.restoreBackupId, search: $( '#zoecloud-restore-search' ).value, replace: $( '#zoecloud-restore-replace' ).value, hostname: $( '#zoecloud-restore-hostname' ).value } } );
-			feedback( '#zoecloud-restore-feedback', t( 'restoreQueued', 'Protected restore queued.' ) ); pollJob( job.id, true );
+			dialog.close();
+			feedback( '#zoecloud-feedback', t( 'restoreQueued', 'Protected restore queued.' ) );
+			renderJob( job ); pollJob( job.id, true );
 		} catch ( error ) { feedback( '#zoecloud-restore-feedback', error.message, true ); button.disabled = false; }
 	} );
 
