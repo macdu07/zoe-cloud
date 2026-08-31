@@ -9,7 +9,7 @@
 	const t = ( key, fallback = '' ) => config.i18n?.[ key ] || fallback;
 	const $ = ( selector, root = document ) => root.querySelector( selector );
 	const $$ = ( selector, root = document ) => Array.from( root.querySelectorAll( selector ) );
-	const state = { status: null, backups: [], activity: [], selected: new Set(), restoreFilename: '', polling: null, pollFailures: 0, reloadTimer: null };
+	const state = { status: null, backups: [], activity: [], selected: new Set(), restoreFilename: '', polling: null, pollFailures: 0 };
 
 	const escapeHtml = ( value ) => String( value ?? '' ).replace( /[&<>"']/g, ( char ) => ( { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' } )[ char ] );
 	const formatBytes = ( bytes ) => {
@@ -163,7 +163,7 @@
 			renderJob( job );
 			if ( [ 'completed', 'failed' ].includes( job.status ) ) {
 				const failed = job.status === 'failed';
-				const message = isRestore && ! failed ? t( 'restoreCompleted', 'Restore completed successfully. This page will reload shortly.' ) : job.message;
+				const message = isRestore && ! failed ? t( 'restoreCompleted', 'Restore completed successfully.' ) : job.message;
 				feedback( '#zoecloud-feedback', message, failed );
 				try {
 					await refresh();
@@ -172,8 +172,11 @@
 					// terminal job state is already known, so do not hide its result.
 				}
 				if ( isRestore && ! failed ) {
-					window.clearTimeout( state.reloadTimer );
-					state.reloadTimer = window.setTimeout( () => window.location.reload(), 1800 );
+					if ( window.confirm( t( 'restoreReloadConfirm', 'Restore completed successfully. Reload the page now?' ) ) ) {
+						window.location.reload();
+					} else {
+						feedback( '#zoecloud-feedback', t( 'restoreCompletedNoReload', 'Restore completed successfully. The page was not reloaded.' ) );
+					}
 				}
 				return;
 			}
