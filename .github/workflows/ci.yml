@@ -11,14 +11,15 @@ jobs:
       fail-fast: false
       matrix:
         php: ['8.1', '8.2', '8.3', '8.4']
-        wordpress: ['6.4', 'latest']
+        # Use the latest published security patch in the 6.4 branch; WordPress.org does not publish a 6.4.tar.gz alias.
+        wordpress: ['6.4.10', 'latest']
         exclude:
           - php: '8.2'
-            wordpress: '6.4'
+            wordpress: '6.4.10'
           - php: '8.3'
-            wordpress: '6.4'
+            wordpress: '6.4.10'
           - php: '8.4'
-            wordpress: '6.4'
+            wordpress: '6.4.10'
     services:
       mysql:
         image: mysql:8.0
